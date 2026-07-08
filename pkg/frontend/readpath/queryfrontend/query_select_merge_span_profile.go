@@ -42,6 +42,7 @@ func (q *QueryFrontend) SelectMergeSpanProfile(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	useSymbolRefs := q.useSymbolRefTrees(tenantIDs)
 	report, err := q.querySingle(ctx,
 		&queryv1.QueryRequest{
 			StartTime:     c.Msg.Start,
@@ -52,10 +53,14 @@ func (q *QueryFrontend) SelectMergeSpanProfile(
 				Tree: &queryv1.TreeQuery{
 					MaxNodes:     maxNodes,
 					SpanSelector: c.Msg.SpanSelector,
+					SymbolRefs:   useSymbolRefs,
 				},
 			}},
 		},
 		func(ctx context.Context, upstream QueryBackend, blocks []*metastorev1.BlockMeta) QueryBackend {
+			if useSymbolRefs {
+				return upstream
+			}
 			shouldSymbolize := q.shouldSymbolize(ctx, tenantIDs, blocks)
 			if !shouldSymbolize {
 				return upstream
@@ -71,6 +76,9 @@ func (q *QueryFrontend) SelectMergeSpanProfile(
 	}
 	if report == nil {
 		return connect.NewResponse(&querierv1.SelectMergeSpanProfileResponse{}), nil
+	}
+	if err := q.resolveSymbolRefs(ctx, tenantIDs, report, maxNodes); err != nil {
+		return nil, err
 	}
 
 	var resp querierv1.SelectMergeSpanProfileResponse
