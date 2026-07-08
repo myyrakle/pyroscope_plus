@@ -181,3 +181,54 @@ func (s *testSuite) Test_QueryTree_FullSymbols_Filter() {
 	s.Assert().Greater(allTree.Total(), filteredTree.Total())
 	s.Assert().Less(len(filtered.Symbols.Locations), len(all.Symbols.Locations))
 }
+
+// Test_QueryTree_SymbolRefs_MutualExclusion verifies that a query setting
+// both symbol_refs and full_symbols is rejected, rather than silently
+// preferring one and dropping the other.
+func (s *testSuite) Test_QueryTree_SymbolRefs_MutualExclusion() {
+	_, err := s.reader.Invoke(s.ctx, &queryv1.InvokeRequest{
+		EndTime:       time.Now().UnixMilli(),
+		LabelSelector: "{}",
+		QueryPlan:     s.plan,
+		Query: []*queryv1.Query{{
+			QueryType: queryv1.QueryType_QUERY_TREE,
+			Tree:      &queryv1.TreeQuery{SymbolRefs: true, FullSymbols: true},
+		}},
+		Tenant: s.tenant,
+	})
+	s.Require().Error(err)
+	s.Assert().Contains(err.Error(), "symbol_refs and full_symbols cannot be combined")
+}
+
+// Test_QueryTree_SymbolRefs_NativeDatasetKeepsPlainPath verifies that a
+// symbol_refs query against a dataset not labeled unsymbolized (every
+// dataset in the test fixtures) keeps today's FunctionName path exactly:
+// no SymbolRefTable is attached, and the tree matches a non-symbol_refs
+// query byte for byte in structure (same totals, no TREE->PPROF detour).
+func (s *testSuite) Test_QueryTree_SymbolRefs_NativeDatasetKeepsPlainPath() {
+	invoke := func(symbolRefs bool) *queryv1.TreeReport {
+		resp, err := s.reader.Invoke(s.ctx, &queryv1.InvokeRequest{
+			EndTime:       time.Now().UnixMilli(),
+			LabelSelector: "{}",
+			QueryPlan:     s.plan,
+			Query: []*queryv1.Query{{
+				QueryType: queryv1.QueryType_QUERY_TREE,
+				Tree:      &queryv1.TreeQuery{MaxNodes: 16, SymbolRefs: symbolRefs},
+			}},
+			Tenant: s.tenant,
+		})
+		s.Require().NoError(err)
+		s.Require().Len(resp.Reports, 1)
+		return resp.Reports[0].Tree
+	}
+
+	plain := invoke(false)
+	symbolRefs := invoke(true)
+	s.Assert().Nil(symbolRefs.SymbolRefs, "a native dataset must not attach a SymbolRefTable")
+
+	plainTree, err := phlaremodel.UnmarshalTree[phlaremodel.FunctionName, phlaremodel.FunctionNameI](plain.Tree)
+	s.Require().NoError(err)
+	symbolRefsTree, err := phlaremodel.UnmarshalTree[phlaremodel.FunctionName, phlaremodel.FunctionNameI](symbolRefs.Tree)
+	s.Require().NoError(err)
+	s.Assert().Equal(plainTree.String(), symbolRefsTree.String())
+}

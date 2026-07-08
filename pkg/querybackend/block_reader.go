@@ -131,6 +131,7 @@ func (b *BlockReader) Invoke(
 			grp:             g,
 			execCollector:   blockExecCollector,
 			weightCollector: weightCollector,
+			metrics:         b.metrics,
 		}).execute))
 	}
 
