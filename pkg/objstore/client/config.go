@@ -12,6 +12,7 @@ import (
 	"github.com/thanos-io/objstore"
 
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/azure"
+	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/clickhouse"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/cos"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/filesystem"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/gcs"
@@ -40,10 +41,13 @@ const (
 
 	// Filesystem is the value for the filesystem storage backend.
 	Filesystem = "filesystem"
+
+	// ClickHouse is the value for the ClickHouse storage backend.
+	ClickHouse = "clickhouse"
 )
 
 var (
-	SupportedBackends = []string{S3, GCS, Azure, Swift, Filesystem, COS}
+	SupportedBackends = []string{S3, GCS, Azure, Swift, Filesystem, COS, ClickHouse}
 
 	ErrUnsupportedStorageBackend      = errors.New("unsupported storage backend")
 	ErrStoragePrefixStartsWithSlash   = errors.New("storage prefix starts with a slash")
@@ -70,6 +74,7 @@ type StorageBackendConfig struct {
 	Swift      swift.Config      `yaml:"swift"`
 	COS        cos.Config        `yaml:"cos"`
 	Filesystem filesystem.Config `yaml:"filesystem"`
+	ClickHouse clickhouse.Config `yaml:"clickhouse"`
 }
 
 // Returns the supportedBackends for the package and any custom backends injected into the config.
@@ -89,6 +94,7 @@ func (cfg *StorageBackendConfig) RegisterFlagsWithPrefixAndDefaultDirectory(pref
 	cfg.Swift.RegisterFlagsWithPrefix(prefix, f)
 	cfg.Filesystem.RegisterFlagsWithPrefixAndDefaultDirectory(prefix, dir, f)
 	cfg.COS.RegisterFlagsWithPrefix(prefix, f)
+	cfg.ClickHouse.RegisterFlagsWithPrefix(prefix, f)
 	f.StringVar(&cfg.Backend, prefix+"backend", Filesystem, fmt.Sprintf("Backend storage to use. Supported backends are: %s.", strings.Join(cfg.supportedBackends(), ", ")))
 }
 
@@ -110,6 +116,8 @@ func (cfg *StorageBackendConfig) Validate() error {
 		return cfg.S3.Validate()
 	case COS:
 		return cfg.COS.Validate()
+	case ClickHouse:
+		return cfg.ClickHouse.Validate()
 	default:
 		return nil
 	}

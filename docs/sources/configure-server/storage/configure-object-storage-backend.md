@@ -18,10 +18,52 @@ The supported backends are:
 - [Google Cloud Storage](https://cloud.google.com/storage)
 - [Azure Blob Storage](https://azure.microsoft.com/es-es/services/storage/blobs/)
 - [Swift (OpenStack Object Storage)](https://wiki.openstack.org/wiki/Swift)
+- Self-managed ClickHouse
 
-> Internally, Pyroscope uses [Thanos' object store client] library, so their stated limitations apply.
+> For S3, GCS, Azure, and Swift, Pyroscope uses [Thanos' object store client], so their stated limitations apply.
 
 [Thanos' object store client]: https://github.com/thanos-io/objstore#supported-providers-clients
+
+## ClickHouse
+
+The ClickHouse backend stores object manifests and fixed-size binary chunks in
+ClickHouse. The current schema uses node-local `MergeTree` tables and requires
+exactly one stable native-protocol endpoint. It does not provide ClickHouse
+replication or endpoint failover, so use S3, GCS, or Azure when the object store
+must remain available after losing a ClickHouse node.
+
+```yaml
+storage:
+  backend: clickhouse
+  clickhouse:
+    addresses: clickhouse-storage:9000
+    database: pyroscope
+    objects_table: pyroscope_objects
+    chunks_table: pyroscope_object_chunks
+    auto_create_tables: true
+    cleanup:
+      enabled: false # Enable on one designated process only.
+```
+
+The backend creates the manifest table, chunk table, latest-state aggregate
+table, and latest-state materialized view when `auto_create_tables` is enabled.
+For production, bootstrap and verify the schema first, then disable automatic
+creation during normal service startup. `partition_count` is fixed at 64; changing
+it or upgrading a legacy ClickHouse object-store schema requires recreating all
+four objects.
+
+Latest-object reads use `argMaxMerge` over append-only aggregate states, so they
+do not depend on background `MergeTree` merge completion and do not require
+`FINAL`. Reader prefetch is bounded by both `read_prefetch_chunks` and
+`max_read_prefetch_bytes`.
+
+Cleanup is disabled by default. It uses synchronous, partition-scoped mutations
+and limits total deletions per pass. In a distributed Pyroscope deployment,
+enable cleanup on one designated process only and leave it disabled on other
+processes that open the same tables. Back up the ClickHouse database before
+schema changes, and monitor the `pyroscope_objstore_clickhouse_*` metrics for
+operation latency, failures, commit retries, chunk query volume, and cleanup
+mutation duration.
 
 ## Amazon S3
 

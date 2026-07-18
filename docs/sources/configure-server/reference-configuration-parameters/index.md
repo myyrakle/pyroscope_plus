@@ -187,7 +187,7 @@ tenant_settings:
 
 storage:
   # Backend storage to use. Supported backends are: s3, gcs, azure, swift,
-  # filesystem, cos.
+  # filesystem, cos, clickhouse.
   # CLI flag: -storage.backend
   [backend: <string> | default = "filesystem"]
 
@@ -274,6 +274,122 @@ storage:
   # The filesystem_storage_backend block configures the usage of local file
   # system as object storage backend.
   [filesystem: <filesystem_storage_backend>]
+
+  clickhouse:
+    # ClickHouse native protocol endpoint. Exactly one endpoint is required
+    # because the current node-local MergeTree schema requires a consistent
+    # endpoint. For HA, use a stable endpoint pinned to one ClickHouse storage
+    # node until replicated schema and consistency support is available.
+    # CLI flag: -storage.clickhouse.addresses
+    [addresses: <string> | default = "localhost:9000"]
+
+    # ClickHouse database name.
+    # CLI flag: -storage.clickhouse.database
+    [database: <string> | default = "default"]
+
+    # ClickHouse object manifests table name.
+    # CLI flag: -storage.clickhouse.objects-table
+    [objects_table: <string> | default = "pyroscope_objects"]
+
+    # ClickHouse object chunks table name.
+    # CLI flag: -storage.clickhouse.chunks-table
+    [chunks_table: <string> | default = "pyroscope_object_chunks"]
+
+    # ClickHouse username.
+    # CLI flag: -storage.clickhouse.username
+    [username: <string> | default = "default"]
+
+    # ClickHouse password.
+    # CLI flag: -storage.clickhouse.password
+    [password: <string> | default = ""]
+
+    # Use TLS for ClickHouse connections.
+    # CLI flag: -storage.clickhouse.secure
+    [secure: <boolean> | default = false]
+
+    # (advanced) Skip ClickHouse TLS certificate and hostname verification.
+    # CLI flag: -storage.clickhouse.skip-verify
+    [skip_verify: <boolean> | default = false]
+
+    # (advanced) Server name used to verify the ClickHouse TLS certificate.
+    # CLI flag: -storage.clickhouse.tls-server-name
+    [tls_server_name: <string> | default = ""]
+
+    # (advanced) Path to a PEM-encoded CA certificate for ClickHouse TLS
+    # connections.
+    # CLI flag: -storage.clickhouse.tls-ca-path
+    [tls_ca_path: <string> | default = ""]
+
+    # (advanced) Maximum duration for establishing a ClickHouse connection.
+    # CLI flag: -storage.clickhouse.dial-timeout
+    [dial_timeout: <duration> | default = 5s]
+
+    # (advanced) Maximum duration for a ClickHouse query.
+    # CLI flag: -storage.clickhouse.query-timeout
+    [query_timeout: <duration> | default = 30s]
+
+    # (advanced) Maximum number of open ClickHouse connections.
+    # CLI flag: -storage.clickhouse.max-open-connections
+    [max_open_connections: <int> | default = 16]
+
+    # (advanced) Maximum number of idle ClickHouse connections.
+    # CLI flag: -storage.clickhouse.max-idle-connections
+    [max_idle_connections: <int> | default = 8]
+
+    # (advanced) Maximum lifetime of a ClickHouse connection.
+    # CLI flag: -storage.clickhouse.connection-lifetime
+    [connection_lifetime: <duration> | default = 1h]
+
+    # (advanced) Compression used for ClickHouse connections.
+    # CLI flag: -storage.clickhouse.compression
+    [compression: <string> | default = "lz4"]
+
+    # (advanced) Maximum object chunk size in bytes.
+    # CLI flag: -storage.clickhouse.chunk-size
+    [chunk_size: <int> | default = 4194304]
+
+    # (advanced) Maximum number of chunks per ClickHouse insert batch.
+    # CLI flag: -storage.clickhouse.insert-batch-size
+    [insert_batch_size: <int> | default = 8]
+
+    # (advanced) Maximum number of object chunks prefetched by a reader.
+    # CLI flag: -storage.clickhouse.read-prefetch-chunks
+    [read_prefetch_chunks: <int> | default = 8]
+
+    # (advanced) Maximum bytes prefetched by an object reader.
+    # CLI flag: -storage.clickhouse.max-read-prefetch-bytes
+    [max_read_prefetch_bytes: <int> | default = 33554432]
+
+    # (advanced) Fixed ClickHouse object-store schema partition count.
+    # CLI flag: -storage.clickhouse.partition-count
+    [partition_count: <int> | default = 64]
+
+    # (advanced) Maximum duration allowed for an object upload.
+    # CLI flag: -storage.clickhouse.max-upload-duration
+    [max_upload_duration: <duration> | default = 30m]
+
+    # Create required ClickHouse tables when they do not exist.
+    # CLI flag: -storage.clickhouse.auto-create-tables
+    [auto_create_tables: <boolean> | default = true]
+
+    cleanup:
+      # Enable cleanup of incomplete and obsolete ClickHouse object generations.
+      # Enable this on one designated process only.
+      # CLI flag: -storage.clickhouse.cleanup.enabled
+      [enabled: <boolean> | default = false]
+
+      # Interval between ClickHouse object cleanup passes.
+      # CLI flag: -storage.clickhouse.cleanup.interval
+      [interval: <duration> | default = 24h]
+
+      # Minimum age of a ClickHouse object generation before cleanup.
+      # CLI flag: -storage.clickhouse.cleanup.grace
+      [grace: <duration> | default = 24h]
+
+      # Maximum number of ClickHouse object generations per cleanup mutation (up
+      # to 1000).
+      # CLI flag: -storage.clickhouse.cleanup.mutation-batch-size
+      [mutation_batch_size: <int> | default = 100]
 
   # Prefix for all objects stored in the backend storage. For simplicity, it may
   # only contain digits and English alphabet characters, hyphens, underscores,
