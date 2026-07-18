@@ -1,0 +1,21 @@
+target: all
+architecture_storage: v2
+storage:
+  backend: clickhouse
+  clickhouse:
+    addresses: clickhouse:9000
+    database: default
+    objects_table: pyroscope_objects
+    chunks_table: pyroscope_object_chunks
+    auto_create_tables: true
+    cleanup:
+      enabled: true
+      interval: 1m
+      grace: 2m
+      mutation_batch_size: 100
+pyroscopedb:
+  data_path: /data
+metastore:
+  raft:
+    dir: /data-metastore/raft
+  data_dir: /data-metastore/data

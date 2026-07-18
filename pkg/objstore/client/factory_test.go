@@ -8,17 +8,25 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
+	"flag"
 	"os"
 	"path"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/flagext"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/thanos-io/objstore"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/clickhouse"
 	"github.com/grafana/pyroscope/v2/pkg/objstore/providers/filesystem"
+	phlarecontext "github.com/grafana/pyroscope/v2/pkg/pyroscope/context"
 )
 
 const (
@@ -261,4 +269,190 @@ func TestNewPrefixedBucketClient(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "content", string(b))
 	})
+}
+
+func TestClickHouseConfigDefaults(t *testing.T) {
+	var cfg Config
+	flagext.DefaultValues(&cfg)
+
+	require.Contains(t, SupportedBackends, ClickHouse)
+	require.Equal(t, Filesystem, cfg.Backend)
+	require.True(t, cfg.ClickHouse.AutoCreateTables)
+	require.False(t, cfg.ClickHouse.Cleanup.Enabled)
+	require.NoError(t, cfg.ClickHouse.Validate())
+}
+
+func TestClickHouseConfigFlagsCanDisableDefaults(t *testing.T) {
+	var cfg Config
+	fs := flag.NewFlagSet("storage", flag.ContinueOnError)
+	cfg.RegisterFlagsWithPrefix("storage.", fs)
+
+	err := fs.Parse([]string{
+		"-storage.backend=clickhouse",
+		"-storage.clickhouse.auto-create-tables=false",
+		"-storage.clickhouse.cleanup.enabled=false",
+	})
+	require.NoError(t, err)
+	require.Equal(t, ClickHouse, cfg.Backend)
+	require.False(t, cfg.ClickHouse.AutoCreateTables)
+	require.False(t, cfg.ClickHouse.Cleanup.Enabled)
+}
+
+func TestClickHouseConfigYAMLAndSecretRedaction(t *testing.T) {
+	const password = "not-for-output"
+	var cfg Config
+	flagext.DefaultValues(&cfg)
+
+	err := yaml.Unmarshal([]byte(`
+backend: clickhouse
+clickhouse:
+  addresses: one:9000
+  database: profiles
+  objects_table: object_manifests
+  chunks_table: object_chunks
+  username: pyroscope
+  password: `+password+`
+  auto_create_tables: false
+  cleanup:
+    enabled: false
+`), &cfg)
+	require.NoError(t, err)
+	require.Equal(t, ClickHouse, cfg.Backend)
+	require.Equal(t, flagext.StringSliceCSV{"one:9000"}, cfg.ClickHouse.Addresses)
+	require.Equal(t, "profiles", cfg.ClickHouse.Database)
+	require.Equal(t, "object_manifests", cfg.ClickHouse.ObjectsTable)
+	require.Equal(t, "object_chunks", cfg.ClickHouse.ChunksTable)
+	require.Equal(t, "pyroscope", cfg.ClickHouse.Username)
+	require.Equal(t, password, cfg.ClickHouse.Password.String())
+	require.False(t, cfg.ClickHouse.AutoCreateTables)
+	require.False(t, cfg.ClickHouse.Cleanup.Enabled)
+	require.NoError(t, cfg.Validate(log.NewNopLogger()))
+
+	encoded, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), password)
+	require.Contains(t, string(encoded), "********")
+}
+
+func TestClickHouseConfigValidationDelegatesToProvider(t *testing.T) {
+	var cfg Config
+	flagext.DefaultValues(&cfg)
+	cfg.Backend = ClickHouse
+	cfg.ClickHouse.Database = "invalid-database"
+
+	err := cfg.Validate(log.NewNopLogger())
+	require.ErrorContains(t, err, "invalid ClickHouse database")
+}
+
+func TestNewClickHouseBucketDispatchesAndUsesRemoteWrappers(t *testing.T) {
+	var cfg Config
+	flagext.DefaultValues(&cfg)
+	cfg.Backend = ClickHouse
+	cfg.Prefix = "tenant-a"
+
+	reg := prometheus.NewRegistry()
+	ctx := phlarecontext.WithRegistry(context.Background(), reg)
+	underlying := objstore.NewInMemBucket()
+	middlewareCalled := false
+	cfg.Middlewares = []func(objstore.Bucket) (objstore.Bucket, error){
+		func(bucket objstore.Bucket) (objstore.Bucket, error) {
+			middlewareCalled = true
+			require.Same(t, underlying, bucket)
+			return bucket, nil
+		},
+	}
+
+	client, err := newBucket(ctx, cfg, "clickhouse-test", func(
+		_ context.Context,
+		gotCfg clickhouse.Config,
+		name string,
+		_ log.Logger,
+		gotReg prometheus.Registerer,
+	) (objstore.Bucket, error) {
+		require.Equal(t, cfg.ClickHouse, gotCfg)
+		require.Equal(t, "clickhouse-test", name)
+		require.Same(t, reg, gotReg)
+		return underlying, nil
+	})
+	require.NoError(t, err)
+	require.True(t, middlewareCalled)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	require.NoError(t, client.Upload(ctx, "binary", bytes.NewReader([]byte{0, 1, 2, 0xff})))
+	require.Equal(t, []byte{0, 1, 2, 0xff}, underlying.Objects()["tenant-a/binary"])
+
+	readerAt, err := client.ReaderAt(ctx, "binary")
+	require.NoError(t, err)
+	require.NoError(t, readerAt.Close())
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	require.True(t, hasMetricFamily(families, "objstore_bucket_operations_total"))
+}
+
+func TestNewClickHouseBucketClosesBackendOnceWhenMiddlewareFails(t *testing.T) {
+	middlewareErr := errors.New("middleware failed")
+	closeErr := errors.New("close failed")
+
+	for _, tt := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close succeeds"},
+		{name: "close fails", closeErr: closeErr},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			flagext.DefaultValues(&cfg)
+			cfg.Backend = ClickHouse
+			cfg.Middlewares = []func(objstore.Bucket) (objstore.Bucket, error){
+				func(objstore.Bucket) (objstore.Bucket, error) {
+					return nil, middlewareErr
+				},
+			}
+			backend := &closeCountingBucket{
+				Bucket:   objstore.NewInMemBucket(),
+				closeErr: tt.closeErr,
+			}
+
+			client, err := newBucket(context.Background(), cfg, "clickhouse-test", func(
+				context.Context,
+				clickhouse.Config,
+				string,
+				log.Logger,
+				prometheus.Registerer,
+			) (objstore.Bucket, error) {
+				return backend, nil
+			})
+
+			require.Nil(t, client)
+			require.ErrorIs(t, err, middlewareErr)
+			if tt.closeErr != nil {
+				require.ErrorIs(t, err, tt.closeErr)
+			} else {
+				require.NotErrorIs(t, err, closeErr)
+			}
+			require.Equal(t, int32(1), backend.closeCalls.Load())
+		})
+	}
+}
+
+type closeCountingBucket struct {
+	objstore.Bucket
+	closeCalls atomic.Int32
+	closeErr   error
+}
+
+func (b *closeCountingBucket) Close() error {
+	b.closeCalls.Add(1)
+	return b.closeErr
+}
+
+func hasMetricFamily(families []*dto.MetricFamily, name string) bool {
+	for _, family := range families {
+		if family.GetName() == name {
+			return true
+		}
+	}
+	return false
 }

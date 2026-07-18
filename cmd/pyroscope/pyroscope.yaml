@@ -604,7 +604,7 @@ runtime_config:
 
 storage:
   # Backend storage to use. Supported backends are: s3, gcs, azure, swift,
-  # filesystem, cos.
+  # filesystem, cos, clickhouse.
   # backend: "filesystem"
 
   s3:
@@ -762,6 +762,49 @@ storage:
   filesystem:
     # Local filesystem storage directory.
     # dir: "./data/v2/shared"
+
+  clickhouse:
+    # ClickHouse native protocol endpoint. Exactly one endpoint is required
+    # because the current node-local MergeTree schema requires a consistent
+    # endpoint. For HA, use a stable endpoint pinned to one ClickHouse storage
+    # node until replicated schema and consistency support is available.
+    # addresses: "localhost:9000"
+
+    # ClickHouse database name.
+    # database: "default"
+
+    # ClickHouse object manifests table name.
+    # objects_table: "pyroscope_objects"
+
+    # ClickHouse object chunks table name.
+    # chunks_table: "pyroscope_object_chunks"
+
+    # ClickHouse username.
+    # username: "default"
+
+    # ClickHouse password.
+    # password: ""
+
+    # Use TLS for ClickHouse connections.
+    # secure: false
+
+    # Create required ClickHouse tables when they do not exist.
+    # auto_create_tables: true
+
+    cleanup:
+      # Enable cleanup of incomplete and obsolete ClickHouse object generations.
+      # Enable this on one designated process only.
+      # enabled: false
+
+      # Interval between ClickHouse object cleanup passes.
+      # interval: 24h
+
+      # Minimum age of a ClickHouse object generation before cleanup.
+      # grace: 24h
+
+      # Maximum number of ClickHouse object generations per cleanup mutation (up
+      # to 1000).
+      # mutation_batch_size: 100
 
   # Prefix for all objects stored in the backend storage. For simplicity, it may
   # only contain digits and English alphabet characters, hyphens, underscores,

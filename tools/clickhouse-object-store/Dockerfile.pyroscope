@@ -1,0 +1,54 @@
+FROM node:24@sha256:bb20cf73b3ad7212834ec48e2174cdcb5775f6550510a5336b842ae32741ce6c AS frontend
+
+WORKDIR /pyroscope/ui
+COPY ui/package.json ui/yarn.lock ui/.yarnrc.yml ui/.npmrc ./
+RUN corepack enable && yarn install --immutable
+COPY ui/index.html ui/vite.config.ts ./
+COPY ui/tsconfig*.json ./
+COPY ui/src ./src
+COPY ui/public ./public
+RUN yarn build
+
+FROM golang:1.25.12@sha256:d2e20dc1b35aefd666909163e4ace41efb521359aa2ce31fff59d86837050f6f AS builder
+
+WORKDIR /pyroscope
+COPY go.work go.work.sum go.mod go.sum ./
+COPY api/go.mod api/go.sum ./api/
+COPY lidia/go.mod lidia/go.sum ./lidia/
+RUN go mod download && \
+    (cd api && go mod download) && \
+    (cd lidia && go mod download)
+COPY . .
+RUN rm -rf ./ui/dist
+COPY --from=frontend /pyroscope/ui/dist ./ui/dist
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 go build -tags=embedassets -o /out/pyroscope ./cmd/pyroscope && \
+    CGO_ENABLED=0 go build -tags=embedassets -o /out/profilecli ./cmd/profilecli
+
+FROM gcr.io/distroless/static:debug@sha256:7dc183cc0aea6abd9d105135e49d37b7474a79391ebea7eb55557cd4486d2225 AS debug
+
+SHELL [ "/busybox/sh", "-c" ]
+
+RUN addgroup -g 10001 -S pyroscope && \
+    adduser -u 10001 -S pyroscope -G pyroscope -h /data
+
+FROM gcr.io/distroless/static@sha256:87bce11be0af225e4ca761c40babb06d6d559f5767fbf7dc3c47f0f1a466b92c
+
+COPY --from=debug /etc/passwd /etc/passwd
+COPY --from=debug /etc/group /etc/group
+
+VOLUME /data
+COPY --chown=pyroscope:pyroscope --from=debug /data /data
+VOLUME /data-compactor
+COPY --chown=pyroscope:pyroscope --from=debug /data /data-compactor
+VOLUME /data-metastore
+COPY --chown=pyroscope:pyroscope --from=debug /data /data-metastore
+
+COPY tools/clickhouse-object-store/pyroscope.yaml /etc/pyroscope/config.yaml
+COPY --from=builder /out/profilecli /usr/bin/profilecli
+COPY --from=builder /out/pyroscope /usr/bin/pyroscope
+
+USER pyroscope
+EXPOSE 4040
+ENTRYPOINT [ "/usr/bin/pyroscope" ]
+CMD ["-config.file=/etc/pyroscope/config.yaml"]
