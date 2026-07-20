@@ -181,6 +181,22 @@ func TestValidateLatestMaterializedViewAcceptsClickHouse253CanonicalDefinition(t
 	require.NoError(t, err)
 }
 
+func TestValidateLatestMaterializedViewAcceptsClickHouse26TupleCanonicalDefinition(t *testing.T) {
+	definition := "CREATE MATERIALIZED VIEW default.objects_latest_mv TO default.objects_latest " +
+		"(`object_key` String, `manifest` AggregateFunction(argMax, Tuple(UUID, UInt64, UInt32, UInt32, " +
+		"Enum8('pending' = 1, 'committed' = 2, 'deleted' = 3), UInt64, DateTime64(3, 'UTC'), " +
+		"DateTime64(3, 'UTC')), Tuple(UInt64, UUID))) AS SELECT object_key, " +
+		"argMaxState(tuple(generation, object_size, chunk_count, chunk_size, state, version, lease_expires_at, event_at), " +
+		"tuple(version, generation)) AS manifest FROM default.objects " +
+		"WHERE state IN ('committed', 'deleted') GROUP BY object_key"
+
+	err := validateLatestMaterializedView("default.objects_latest_mv", tableInfo{
+		Engine:           "MaterializedView",
+		CreateTableQuery: definition,
+	}, "default", "objects", "objects_latest", "objects_latest_mv")
+	require.NoError(t, err)
+}
+
 func TestValidateLatestMaterializedViewRejectsSemanticChanges(t *testing.T) {
 	definition, err := latestMaterializedViewDDL("profile_db", "objects", "objects_latest", "objects_latest_mv")
 	require.NoError(t, err)

@@ -295,5 +295,8 @@ func normalizeSchemaExpression(value string) string {
 }
 
 func normalizeMaterializedViewDefinition(value string) string {
-	return strings.Replace(normalizeSchemaExpression(value), "IFNOTEXISTS", "", 1)
+	value = strings.Replace(normalizeSchemaExpression(value), "IFNOTEXISTS", "", 1)
+	// ClickHouse 26 canonicalizes tuple expressions in SHOW CREATE TABLE from
+	// `(a, b)` to `tuple(a, b)`. Both forms are semantically identical.
+	return strings.ReplaceAll(value, "tuple(", "(")
 }
