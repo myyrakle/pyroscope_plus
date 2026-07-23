@@ -125,14 +125,19 @@ func chunksDDL(database, table string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Chunk payloads dominate storage volume; ZSTD(1) measurably reduces
+	// their size over the default LZ4 at a small CPU cost. The generation
+	// UUID is random and incompressible, so it keeps the default codec.
+	// Schema validation ignores codecs, so tables created before these
+	// defaults remain compatible.
 	return fmt.Sprintf(strings.TrimSpace(`
 CREATE TABLE IF NOT EXISTS %s
 (
-    object_key String,
+    object_key String CODEC(ZSTD(1)),
     generation UUID,
-    chunk_index UInt32,
-    data String,
-    created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    chunk_index UInt32 CODEC(ZSTD(1)),
+    data String CODEC(ZSTD(1)),
+    created_at DateTime64(3, 'UTC') DEFAULT now64(3) CODEC(Delta, ZSTD(1))
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) %% 64

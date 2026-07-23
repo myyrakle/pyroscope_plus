@@ -115,11 +115,11 @@ func TestChunksDDL(t *testing.T) {
 	require.Equal(t, strings.TrimSpace(`
 CREATE TABLE IF NOT EXISTS `+"`profile_db`.`chunks`"+`
 (
-    object_key String,
+    object_key String CODEC(ZSTD(1)),
     generation UUID,
-    chunk_index UInt32,
-    data String,
-    created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+    chunk_index UInt32 CODEC(ZSTD(1)),
+    data String CODEC(ZSTD(1)),
+    created_at DateTime64(3, 'UTC') DEFAULT now64(3) CODEC(Delta, ZSTD(1))
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) % 64
