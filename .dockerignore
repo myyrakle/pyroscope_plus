@@ -1,0 +1,7 @@
+.git
+.tmp
+ui/node_modules
+ui/dist
+data
+data-compactor
+data-metastore
