@@ -28,7 +28,7 @@ services:
       start_period: 10s
 
   pyroscope:
-    image: myyrakle/pyroscope-plus:v2.2.0
+    image: myyrakle/pyroscope-plus:${PYROSCOPE_IMAGE_TAG:-v2.2.3}
     restart: unless-stopped
     init: true
     command:
@@ -37,6 +37,10 @@ services:
     ports:
       - "127.0.0.1:${PYROSCOPE_HTTP_PORT:-14040}:4040"
     environment:
+      # Soft heap ceiling: the Go GC works aggressively near this limit
+      # instead of letting query-time allocations grow until the OOM
+      # killer takes the whole process down.
+      GOMEMLIMIT: ${PYROSCOPE_GOMEMLIMIT:-3GiB}
       CLICKHOUSE_DATABASE: pyroscope
       CLICKHOUSE_USER: pyroscope
       CLICKHOUSE_PASSWORD: pyroscope
