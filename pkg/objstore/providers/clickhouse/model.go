@@ -47,6 +47,7 @@ type chunk struct {
 	Generation uuid.UUID
 	Index      uint32
 	Data       []byte
+	FullLength uint64
 	CreatedAt  time.Time
 }
 

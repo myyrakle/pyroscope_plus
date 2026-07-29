@@ -671,17 +671,20 @@ func TestClickHouseStoreLatestManifestReturnsNotFoundForEmptyResult(t *testing.T
 
 func TestClickHouseStoreChunksBindsRangeAndOrdersByIndex(t *testing.T) {
 	generation := uuid.New()
-	want := []chunk{{Key: "key", Generation: generation, Index: 2, Data: []byte("data")}}
+	want := []chunk{{Key: "key", Generation: generation, Index: 2, Data: []byte("data"), FullLength: 4}}
 	conn := &fakeClickHouseConnection{selectFn: selectChunks(want...)}
 	store := testClickHouseStore(t, conn)
 
-	got, err := store.Chunks(context.Background(), "key", generation, 2, 5)
+	object := manifest{Key: "key", Generation: generation, ChunkSize: 4}
+	got, err := store.Chunks(context.Background(), object, 2, 5, 9, 21)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
 	call := conn.selectCalls[0]
 	require.Contains(t, call.query, "chunk_index >= ? AND chunk_index <= ?")
 	require.Contains(t, call.query, "ORDER BY chunk_index")
-	require.Equal(t, []any{"key", generation, uint32(2), uint32(5)}, call.args)
+	require.Contains(t, call.query, "substring(data, slice_from, slice_len) AS data")
+	require.Contains(t, call.query, "toUInt64(length(data)) AS full_length")
+	require.Equal(t, []any{int64(9), int64(4), int64(21), int64(4), "key", generation, uint32(2), uint32(5)}, call.args)
 	require.NotContains(t, call.query, "'key'")
 }
 
@@ -753,7 +756,9 @@ func TestClickHouseStoreCleanupCandidatesUsesSafeBoundedQuery(t *testing.T) {
 	require.Contains(t, call.query, "partition_operations AS")
 	require.Contains(t, call.query, "now64(3) AS cleanup_now")
 	require.Contains(t, call.query, "toIntervalMillisecond(?) AS cleanup_grace")
-	require.Contains(t, call.query, "PREWHERE cityHash64(object_key) % 64 = ?")
+	require.Contains(t, call.query, "WHERE _partition_id = ?")
+	require.NotContains(t, call.query, "PREWHERE cityHash64")
+	require.Contains(t, call.query, "SETTINGS max_threads = 2")
 	require.Contains(t, call.query, "valid_generations AS")
 	require.Contains(t, call.query, "GROUP BY object_key, generation")
 	require.Contains(t, call.query, "latest_generations AS")
@@ -774,8 +779,8 @@ func TestClickHouseStoreCleanupCandidatesUsesSafeBoundedQuery(t *testing.T) {
 	require.NotContains(t, call.query, "row_number()")
 	require.Equal(t, []any{
 		int64(7_200_002),
-		uint64(17), uint8(pending), uint8(committed), uint8(deleted),
-		uint64(17), 7,
+		"17", uint8(pending), uint8(committed), uint8(deleted),
+		"17", 7,
 	}, call.args)
 }
 
@@ -1203,7 +1208,7 @@ func selectCleanupCandidatesFromHistory(t *testing.T, serverNow time.Time, grace
 		require.NotContains(t, query, "row_number()")
 		require.Equal(t, grace.Milliseconds(), args[0])
 		require.Equal(t, []any{
-			grace.Milliseconds(), uint64(7), uint8(pending), uint8(committed), uint8(deleted), uint64(7), 10,
+			grace.Milliseconds(), "7", uint8(pending), uint8(committed), uint8(deleted), "7", 10,
 		}, args)
 
 		type operationID struct {

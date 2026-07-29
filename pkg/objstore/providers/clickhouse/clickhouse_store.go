@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +132,7 @@ type chunkRow struct {
 	Generation uuid.UUID `ch:"generation"`
 	Index      uint32    `ch:"chunk_index"`
 	Data       []byte    `ch:"data"`
+	FullLength uint64    `ch:"full_length"`
 	CreatedAt  time.Time `ch:"created_at"`
 }
 
@@ -549,14 +551,32 @@ FROM merged`, s.latestTable, latestManifestProjection)
 	return rows[0], nil
 }
 
-func (s *clickhouseStore) Chunks(ctx context.Context, key string, generation uuid.UUID, first, last uint32) ([]chunk, error) {
-	query := fmt.Sprintf(`SELECT object_key, generation, chunk_index, data, created_at
-FROM %s
-WHERE object_key = ? AND generation = ? AND chunk_index >= ? AND chunk_index <= ?
+// Chunks returns the chunks first..last of the given object generation. Chunk
+// payloads are sliced server-side to the absolute object byte range
+// [start, end) so that small ranged reads do not transfer whole chunks; the
+// pre-slice payload length is reported in full_length so that readers can
+// still verify chunk integrity against the manifest.
+func (s *clickhouseStore) Chunks(ctx context.Context, object manifest, first, last uint32, start, end uint64) ([]chunk, error) {
+	query := fmt.Sprintf(`SELECT object_key, generation, chunk_index,
+       substring(data, slice_from, slice_len) AS data,
+       full_length, created_at
+FROM (
+    SELECT object_key, generation, chunk_index, data, created_at,
+           toUInt64(length(data)) AS full_length,
+           greatest(toInt64(?) - toInt64(chunk_index) * toInt64(?), 0) AS slice_begin,
+           least(toInt64(?) - toInt64(chunk_index) * toInt64(?), toInt64(length(data))) AS slice_end,
+           toUInt64(slice_begin + 1) AS slice_from,
+           toUInt64(greatest(slice_end - slice_begin, 0)) AS slice_len
+    FROM %s
+    WHERE object_key = ? AND generation = ? AND chunk_index >= ? AND chunk_index <= ?
+)
 ORDER BY chunk_index`, s.chunksTable)
 	var rows []chunkRow
 	queryCtx, cancel := s.queryContext(ctx)
-	err := s.conn.Select(queryCtx, &rows, query, key, generation, first, last)
+	err := s.conn.Select(queryCtx, &rows, query,
+		int64(start), int64(object.ChunkSize),
+		int64(end), int64(object.ChunkSize),
+		object.Key, object.Generation, first, last)
 	cancel()
 	if err != nil {
 		return nil, s.operationError("select ClickHouse chunks", err)
@@ -586,13 +606,19 @@ LIMIT ?`, s.latestTable, latestManifestProjection)
 }
 
 func (s *clickhouseStore) CleanupCandidates(ctx context.Context, partition uint32, grace time.Duration, limit int) ([]cleanupCandidate, error) {
+	// Partition scans filter on the _partition_id virtual column instead of
+	// re-computing cityHash64(object_key) % 64 per row: the partition key of
+	// both tables is exactly that expression, so ClickHouse prunes all other
+	// partitions instead of scanning the whole table for every partition of
+	// the cleanup cycle. max_threads is capped so that periodic cleanup scans
+	// do not starve latency-sensitive manifest lookups and chunk reads.
 	query := fmt.Sprintf(`WITH
 	now64(3) AS cleanup_now,
 	toIntervalMillisecond(?) AS cleanup_grace,
 	partition_operations AS (
 	SELECT object_key, generation, state, version, lease_expires_at, event_at
 	FROM %s
-	PREWHERE cityHash64(object_key) %% 64 = ?
+	WHERE _partition_id = ?
 ), pending_versions AS (
 	SELECT object_key, generation, version, max(lease_expires_at) AS lease_expires_at
 	FROM partition_operations
@@ -623,7 +649,7 @@ func (s *clickhouseStore) CleanupCandidates(ctx context.Context, partition uint3
 ), latest_generations AS (
 	SELECT object_key, tupleElement(argMaxMerge(manifest), 1) AS generation
 	FROM %s
-	PREWHERE cityHash64(object_key) %% 64 = ?
+	WHERE _partition_id = ?
 	GROUP BY object_key
 ), abandoned_pending AS (
 	SELECT source.object_key, source.generation
@@ -647,13 +673,15 @@ func (s *clickhouseStore) CleanupCandidates(ctx context.Context, partition uint3
 SELECT DISTINCT object_key, generation
 FROM candidates
 ORDER BY object_key, generation
-LIMIT ?`, s.objectsTable, s.latestTable)
+LIMIT ?
+SETTINGS max_threads = 2`, s.objectsTable, s.latestTable)
+	partitionID := strconv.FormatUint(uint64(partition), 10)
 	var rows []cleanupCandidateRow
 	queryCtx, cancel := s.queryContext(ctx)
 	err := s.conn.Select(queryCtx, &rows, query,
 		cleanupGraceMilliseconds(grace),
-		uint64(partition), uint8(pending), uint8(committed), uint8(deleted),
-		uint64(partition), limit,
+		partitionID, uint8(pending), uint8(committed), uint8(deleted),
+		partitionID, limit,
 	)
 	cancel()
 	if err != nil {

@@ -148,15 +148,39 @@ func (s *fakeStore) LatestManifest(ctx context.Context, key string) (manifest, e
 	return latest, latestErr
 }
 
-func (s *fakeStore) Chunks(ctx context.Context, key string, generation uuid.UUID, first, last uint32) ([]chunk, error) {
+func (s *fakeStore) Chunks(ctx context.Context, object manifest, first, last uint32, start, end uint64) ([]chunk, error) {
 	s.mu.Lock()
-	s.chunkCalls = append(s.chunkCalls, chunkRequest{generation: generation, first: first, last: last})
+	s.chunkCalls = append(s.chunkCalls, chunkRequest{generation: object.Generation, first: first, last: last})
 	chunksFn := s.chunksFn
 	s.mu.Unlock()
 	if chunksFn == nil {
 		return nil, nil
 	}
-	return chunksFn(ctx, key, generation, first, last)
+	full, err := chunksFn(ctx, object.Key, object.Generation, first, last)
+	if err != nil {
+		return nil, err
+	}
+	return sliceChunksForTest(full, object.ChunkSize, start, end), nil
+}
+
+// sliceChunksForTest mirrors the server-side chunk payload slicing of the real
+// store: FullLength reports the raw payload size and Data is trimmed to the
+// absolute object byte range [start, end).
+func sliceChunksForTest(full []chunk, chunkSize uint32, start, end uint64) []chunk {
+	result := make([]chunk, 0, len(full))
+	for _, value := range full {
+		length := int64(len(value.Data))
+		chunkStart := int64(value.Index) * int64(chunkSize)
+		from := min(length, max(int64(start)-chunkStart, 0))
+		to := min(length, max(int64(end)-chunkStart, 0))
+		if to < from {
+			to = from
+		}
+		value.FullLength = uint64(length)
+		value.Data = value.Data[from:to]
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *fakeStore) ListLatest(ctx context.Context, prefix, afterKey string, limit int) ([]manifest, error) {
