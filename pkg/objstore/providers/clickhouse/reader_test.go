@@ -411,6 +411,32 @@ func TestChunkReaderRangeFetchesOnlyIntersectingBatches(t *testing.T) {
 	}, store.chunkCalls)
 }
 
+func TestChunkReaderSmallRangeTransfersOnlyRequestedBytes(t *testing.T) {
+	cfg := bucketTestConfig()
+	data := make([]byte, 3*cfg.ChunkSize)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	store := fakeObjectStore(data, uint32(cfg.ChunkSize))
+	registry := prometheus.NewRegistry()
+	bucket, err := newBucketWithStore(cfg, "sliced", log.NewNopLogger(), store, registry)
+	require.NoError(t, err)
+
+	offset := int64(cfg.ChunkSize) + 1
+	reader, err := bucket.GetRange(context.Background(), "key", offset, 1)
+	require.NoError(t, err)
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Equal(t, data[offset:offset+1], got)
+	require.Equal(t, []chunkRequest{
+		{generation: store.latest.Generation, first: 1, last: 1},
+	}, store.chunkCalls)
+	// The store must slice chunk payloads server-side: a 1-byte read must not
+	// transfer the whole chunk.
+	require.Equal(t, float64(1), testutil.ToFloat64(bucket.metrics.readPrefetchBytes))
+}
+
 func TestChunkReaderConcurrentCloseCancelsInFlightQuery(t *testing.T) {
 	queryStarted := make(chan struct{})
 	queryCanceled := make(chan struct{})

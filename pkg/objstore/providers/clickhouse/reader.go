@@ -227,7 +227,7 @@ func (r *chunkReader) refill() error {
 	count := min(uint64(r.prefetch), uint64(r.last)-uint64(first)+1)
 	last := first + uint32(count-1)
 	finishQuery := r.metrics.startOperation("chunk_query")
-	chunks, err := r.store.Chunks(r.ctx, r.manifest.Key, r.manifest.Generation, first, last)
+	chunks, err := r.store.Chunks(r.ctx, r.manifest, first, last, r.start, r.end)
 	finishQuery(err)
 	r.metrics.chunkQueries.Inc()
 	var prefetchedBytes int
@@ -253,8 +253,17 @@ func (r *chunkReader) refill() error {
 		if chunks[i].Index == r.manifest.ChunkCount-1 {
 			expectedLength = r.manifest.Size - uint64(chunks[i].Index)*uint64(r.manifest.ChunkSize)
 		}
-		if uint64(len(chunks[i].Data)) != expectedLength {
-			return corruptManifest(r.manifest, fmt.Sprintf("chunk %d length is %d, expected %d", chunks[i].Index, len(chunks[i].Data), expectedLength))
+		if chunks[i].FullLength != expectedLength {
+			return corruptManifest(r.manifest, fmt.Sprintf("chunk %d length is %d, expected %d", chunks[i].Index, chunks[i].FullLength, expectedLength))
+		}
+		chunkStart := uint64(expectedIndex) * uint64(r.manifest.ChunkSize)
+		sliceStart := max(r.start, chunkStart)
+		sliceEnd := min(r.end, chunkStart+expectedLength)
+		if sliceEnd < sliceStart {
+			sliceEnd = sliceStart
+		}
+		if uint64(len(chunks[i].Data)) != sliceEnd-sliceStart {
+			return corruptManifest(r.manifest, fmt.Sprintf("chunk %d slice length is %d, expected %d", chunks[i].Index, len(chunks[i].Data), sliceEnd-sliceStart))
 		}
 	}
 
@@ -267,10 +276,8 @@ func (r *chunkReader) refill() error {
 func (r *chunkReader) activateChunk() {
 	value := &r.batch[r.batchPos]
 	r.batchPos++
-	chunkStart := uint64(value.Index) * uint64(r.manifest.ChunkSize)
-	from := max(r.start, chunkStart) - chunkStart
-	to := min(r.end, chunkStart+uint64(len(value.Data))) - chunkStart
-	r.buffer = value.Data[from:to]
+	// Chunk payloads are already sliced to [r.start, r.end) by the store.
+	r.buffer = value.Data
 	r.done = value.Index == r.last
 	if r.batchPos == len(r.batch) && len(r.buffer) == 0 {
 		r.releaseBatch()
