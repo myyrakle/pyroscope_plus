@@ -20,7 +20,15 @@ storage:
     secure: false
     auto_create_tables: ${CLICKHOUSE_AUTO_CREATE_TABLES}
     cleanup:
+      # Must stay enabled on exactly one process: v2 compaction constantly
+      # rewrites blocks and tombstones the sources, so with cleanup off the
+      # chunks table grows without bound (~88% garbage observed in prod).
       enabled: ${CLICKHOUSE_CLEANUP_ENABLED}
+      # The defaults (24h interval, 100 generations per pass) reclaim only
+      # ~100 generations/day while compaction produces tens of thousands.
+      interval: 5m
+      grace: 24h
+      mutation_batch_size: 1000
 
 metastore:
   raft:

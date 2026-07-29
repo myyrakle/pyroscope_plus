@@ -45,7 +45,7 @@ services:
       CLICKHOUSE_USER: pyroscope
       CLICKHOUSE_PASSWORD: pyroscope
       CLICKHOUSE_AUTO_CREATE_TABLES: ${CLICKHOUSE_AUTO_CREATE_TABLES:-true}
-      CLICKHOUSE_CLEANUP_ENABLED: ${CLICKHOUSE_CLEANUP_ENABLED:-false}
+      CLICKHOUSE_CLEANUP_ENABLED: ${CLICKHOUSE_CLEANUP_ENABLED:-true}
     volumes:
       - ./pyroscope.yml:/etc/pyroscope/config.yaml:ro
       - pyroscope-metastore-data:/data-metastore
