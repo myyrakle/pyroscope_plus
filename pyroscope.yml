@@ -1,6 +1,13 @@
 target: all
 architecture_storage: v2
 
+limits:
+  # The default max_query_length is 24h, which makes the Grafana "Last 7d"
+  # (and anything above 24h) fail with 400 "the query time range exceeds
+  # the limit". max_query_lookback (default 7d) still bounds how far back
+  # queries can reach.
+  max_query_length: 30d
+
 storage:
   backend: clickhouse
   clickhouse:
