@@ -7,7 +7,3 @@ use (
 	./api
 	./lidia
 )
-
-docker buildx build --load --platform linux/amd64,linux/arm64 \
-  -t myyrakle/pyroscope-plus:v2.2.2 \
-  -f cmd/pyroscope/Dockerfile .
