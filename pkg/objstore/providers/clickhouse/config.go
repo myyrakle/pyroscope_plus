@@ -58,6 +58,7 @@ type Config struct {
 	MaxReadPrefetchBytes int                    `yaml:"max_read_prefetch_bytes" category:"advanced"`
 	PartitionCount       int                    `yaml:"partition_count" category:"advanced"`
 	MaxUploadDuration    time.Duration          `yaml:"max_upload_duration" category:"advanced"`
+	ManifestCacheTTL     time.Duration          `yaml:"manifest_cache_ttl" category:"advanced"`
 	AutoCreateTables     bool                   `yaml:"auto_create_tables"`
 	Cleanup              CleanupConfig          `yaml:"cleanup"`
 }
@@ -102,6 +103,7 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 	f.IntVar(&cfg.MaxReadPrefetchBytes, prefix+"clickhouse.max-read-prefetch-bytes", defaultMaxReadPrefetchBytes, "Maximum bytes prefetched by an object reader.")
 	f.IntVar(&cfg.PartitionCount, prefix+"clickhouse.partition-count", objectStorePartitionCount, "Fixed ClickHouse object-store schema partition count.")
 	f.DurationVar(&cfg.MaxUploadDuration, prefix+"clickhouse.max-upload-duration", 30*time.Minute, "Maximum duration allowed for an object upload.")
+	f.DurationVar(&cfg.ManifestCacheTTL, prefix+"clickhouse.manifest-cache-ttl", 15*time.Second, "How long readers may reuse a cached object manifest instead of querying ClickHouse. Objects are immutable, so this only delays visibility of same-key overwrites and deletes. 0 disables the cache.")
 	f.BoolVar(&cfg.AutoCreateTables, prefix+"clickhouse.auto-create-tables", true, "Create required ClickHouse tables when they do not exist.")
 	cfg.Cleanup.RegisterFlagsWithPrefix(prefix+"clickhouse.cleanup.", f)
 }

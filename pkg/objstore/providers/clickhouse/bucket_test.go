@@ -875,3 +875,63 @@ func canceledContext() context.Context {
 	cancel()
 	return ctx
 }
+
+func manifestCacheTestBucket(t *testing.T, store *fakeStore, ttl time.Duration, clock *time.Time) *Bucket {
+	t.Helper()
+	cfg := bucketTestConfig()
+	cfg.ManifestCacheTTL = ttl
+	bucket, err := newBucketWithStoreOptions(cfg, "cache-test", log.NewNopLogger(), store, bucketOptions{
+		now: func() time.Time { return *clock },
+	})
+	require.NoError(t, err)
+	return bucket
+}
+
+func TestManifestCacheServesRepeatedReadsFromOneLookup(t *testing.T) {
+	store := fakeObjectStore([]byte("abcdef"), 3)
+	clock := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	bucket := manifestCacheTestBucket(t, store, 15*time.Second, &clock)
+
+	for range 5 {
+		exists, err := bucket.Exists(context.Background(), "key")
+		require.NoError(t, err)
+		require.True(t, exists)
+	}
+	require.Equal(t, 1, store.latestCalls)
+
+	clock = clock.Add(16 * time.Second)
+	_, err := bucket.Attributes(context.Background(), "key")
+	require.NoError(t, err)
+	require.Equal(t, 2, store.latestCalls)
+}
+
+func TestManifestCacheDisabledByZeroTTL(t *testing.T) {
+	store := fakeObjectStore([]byte("abcdef"), 3)
+	clock := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	bucket := manifestCacheTestBucket(t, store, 0, &clock)
+
+	for range 3 {
+		_, err := bucket.Attributes(context.Background(), "key")
+		require.NoError(t, err)
+	}
+	require.Equal(t, 3, store.latestCalls)
+}
+
+func TestManifestCacheInvalidatedByDelete(t *testing.T) {
+	store := fakeObjectStore([]byte("abcdef"), 3)
+	clock := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	bucket := manifestCacheTestBucket(t, store, time.Hour, &clock)
+
+	exists, err := bucket.Exists(context.Background(), "key")
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.Equal(t, 1, store.latestCalls)
+
+	// After a successful delete the cached manifest must not be served: the
+	// fake store records the tombstone as the latest manifest.
+	require.NoError(t, bucket.Delete(context.Background(), "key"))
+
+	exists, err = bucket.Exists(context.Background(), "key")
+	require.NoError(t, err)
+	require.False(t, exists)
+}
