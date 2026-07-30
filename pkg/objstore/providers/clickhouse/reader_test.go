@@ -518,3 +518,71 @@ func fakeObjectStore(data []byte, chunkSize uint32) *fakeStore {
 func fmtWrapped(err error) error {
 	return errors.Join(errors.New("wrapped"), err)
 }
+
+func TestChunkReaderReadBudgetReleasedAfterReadAndClose(t *testing.T) {
+	cfg := bucketTestConfig()
+	// Budget fits exactly one full prefetch batch.
+	cfg.MaxInflightReadBytes = cfg.ChunkSize * cfg.ReadPrefetchChunks
+	data := make([]byte, 3*cfg.ChunkSize)
+	store := fakeObjectStore(data, uint32(cfg.ChunkSize))
+	bucket := testBucket(cfg, store)
+	require.NotNil(t, bucket.readBudget)
+
+	// Sequential full reads must acquire and release the budget repeatedly.
+	for range 3 {
+		reader, err := bucket.Get(context.Background(), "key")
+		require.NoError(t, err)
+		got, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.Len(t, got, len(data))
+		require.NoError(t, reader.Close())
+	}
+	require.True(t, bucket.readBudget.TryAcquire(int64(cfg.MaxInflightReadBytes)), "budget leaked after completed reads")
+	bucket.readBudget.Release(int64(cfg.MaxInflightReadBytes))
+
+	// Closing a reader mid-stream must return its held budget.
+	reader, err := bucket.Get(context.Background(), "key")
+	require.NoError(t, err)
+	buf := make([]byte, 1)
+	_, err = reader.Read(buf)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.True(t, bucket.readBudget.TryAcquire(int64(cfg.MaxInflightReadBytes)), "budget leaked after early close")
+	bucket.readBudget.Release(int64(cfg.MaxInflightReadBytes))
+}
+
+func TestChunkReaderReadBudgetBlocksConcurrentOverconsumption(t *testing.T) {
+	cfg := bucketTestConfig()
+	cfg.ReadPrefetchChunks = 1
+	cfg.MaxReadPrefetchBytes = cfg.ChunkSize
+	// Budget fits a single chunk: two concurrent readers must serialize.
+	cfg.MaxInflightReadBytes = cfg.ChunkSize
+	data := make([]byte, 2*cfg.ChunkSize)
+	store := fakeObjectStore(data, uint32(cfg.ChunkSize))
+	bucket := testBucket(cfg, store)
+
+	first, err := bucket.GetRange(context.Background(), "key", 0, int64(cfg.ChunkSize))
+	require.NoError(t, err)
+	buf := make([]byte, 1)
+	_, err = first.Read(buf)
+	require.NoError(t, err)
+
+	// While the first reader holds the entire budget, a second reader must
+	// fail fast when its context is canceled instead of proceeding.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	second, err := bucket.GetRange(ctx, "key", int64(cfg.ChunkSize), int64(cfg.ChunkSize))
+	require.NoError(t, err)
+	_, err = second.Read(buf)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NoError(t, second.Close())
+
+	// Once the first reader completes, the budget frees up for new readers.
+	require.NoError(t, first.Close())
+	third, err := bucket.GetRange(context.Background(), "key", int64(cfg.ChunkSize), int64(cfg.ChunkSize))
+	require.NoError(t, err)
+	got, err := io.ReadAll(third)
+	require.NoError(t, err)
+	require.Len(t, got, cfg.ChunkSize)
+	require.NoError(t, third.Close())
+}
