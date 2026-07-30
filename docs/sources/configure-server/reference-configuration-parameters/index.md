@@ -1870,6 +1870,11 @@ The `query_backend` block configures the query-backend (V2 read path).
 # (advanced) Timeout for query-backend client requests.
 # CLI flag: -query-backend.client-timeout
 [client_timeout: <duration> | default = 30s]
+
+# (advanced) Maximum number of block objects processed concurrently across all
+# queries. Bounds query memory usage. 0 disables the limit.
+# CLI flag: -query-backend.block-concurrency
+[block_concurrency: <int> | default = 8]
 ```
 
 ### frontend_worker

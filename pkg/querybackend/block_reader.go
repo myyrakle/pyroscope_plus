@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -54,22 +55,31 @@ type BlockReader struct {
 	metrics  *metrics
 	hostname string
 
+	// blockSem bounds how many block objects are processed concurrently
+	// across all in-flight Invoke requests. Without it a single wide query
+	// executes every block of its plan at once and the decoded sections
+	// exhaust process memory. Nil disables the limit.
+	blockSem *semaphore.Weighted
+
 	// TODO:
-	//  - Use a worker pool instead of the errgroup.
 	//  - Reusable query context.
 	//  - Query pipelining: currently, queries share the same context,
 	//    and reuse resources, but the data is processed independently.
 	//    Instead, they should share the processing pipeline, if possible.
 }
 
-func NewBlockReader(logger log.Logger, storage objstore.Bucket, reg prometheus.Registerer) *BlockReader {
+func NewBlockReader(logger log.Logger, storage objstore.Bucket, reg prometheus.Registerer, blockConcurrency int) *BlockReader {
 	hostname, _ := os.Hostname()
-	return &BlockReader{
+	reader := &BlockReader{
 		log:      logger,
 		storage:  storage,
 		metrics:  newMetrics(reg),
 		hostname: hostname,
 	}
+	if blockConcurrency > 0 {
+		reader.blockSem = semaphore.NewWeighted(int64(blockConcurrency))
+	}
+	return reader
 }
 
 func (b *BlockReader) Invoke(
@@ -122,7 +132,7 @@ func (b *BlockReader) Invoke(
 		blocksCount++
 		datasetsCount += int64(len(md.Datasets))
 		obj := block.NewObject(countingStorage, md)
-		g.Go(util.RecoverPanic((&blockContext{
+		blockCtx := &blockContext{
 			ctx:             ctx,
 			log:             b.log,
 			req:             r,
@@ -131,7 +141,16 @@ func (b *BlockReader) Invoke(
 			grp:             g,
 			execCollector:   blockExecCollector,
 			weightCollector: weightCollector,
-		}).execute))
+		}
+		g.Go(util.RecoverPanic(func() error {
+			if b.blockSem != nil {
+				if err := b.blockSem.Acquire(ctx, 1); err != nil {
+					return err
+				}
+				defer b.blockSem.Release(1)
+			}
+			return blockCtx.execute()
+		}))
 	}
 
 	if err = g.Wait(); err != nil {
