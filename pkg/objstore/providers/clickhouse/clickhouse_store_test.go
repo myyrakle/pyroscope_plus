@@ -830,10 +830,10 @@ func TestClickHouseStoreDeleteGenerationsUsesTwoParameterizedLightweightDeletes(
 	conn := &fakeClickHouseConnection{}
 	store := testClickHouseStore(t, conn)
 
-	require.NoError(t, store.DeleteGenerations(context.Background(), 17, candidates))
+	require.NoError(t, store.DeleteGenerations(context.Background(), candidates))
 	require.Len(t, conn.execCalls, 2)
 	for _, call := range conn.execCalls {
-		require.Contains(t, call.query, "IN PARTITION ? WHERE (object_key, generation) IN ((?, ?), (?, ?))")
+		require.Contains(t, call.query, "WHERE (object_key, generation) IN ((?, ?), (?, ?))")
 		require.Contains(t, call.query, "DELETE FROM")
 		require.Contains(t, call.query, "SETTINGS lightweight_deletes_sync = 2")
 		require.NotContains(t, call.query, "ALTER TABLE")
@@ -842,7 +842,6 @@ func TestClickHouseStoreDeleteGenerationsUsesTwoParameterizedLightweightDeletes(
 			require.NotContains(t, call.query, candidate.Generation.String())
 		}
 		require.Equal(t, []any{
-			uint64(17),
 			candidates[0].Key, candidates[0].Generation,
 			candidates[1].Key, candidates[1].Generation,
 		}, call.args)
@@ -855,7 +854,7 @@ func TestClickHouseStoreDeleteGenerationsEmptyIsNoop(t *testing.T) {
 	conn := &fakeClickHouseConnection{}
 	store := testClickHouseStore(t, conn)
 
-	require.NoError(t, store.DeleteGenerations(context.Background(), 17, nil))
+	require.NoError(t, store.DeleteGenerations(context.Background(), nil))
 	require.Empty(t, conn.execCalls)
 }
 
@@ -871,8 +870,8 @@ func TestClickHouseStoreDeleteGenerationsRetriesChunksAfterPartialFailure(t *tes
 	}}
 	store := testClickHouseStore(t, conn)
 
-	require.Error(t, store.DeleteGenerations(context.Background(), 17, candidates))
-	require.NoError(t, store.DeleteGenerations(context.Background(), 17, candidates))
+	require.Error(t, store.DeleteGenerations(context.Background(), candidates))
+	require.NoError(t, store.DeleteGenerations(context.Background(), candidates))
 	require.Len(t, conn.execCalls, 4)
 	require.Contains(t, conn.execCalls[0].query, "`profiles`.`chunks`")
 	require.Contains(t, conn.execCalls[1].query, "`profiles`.`objects`")

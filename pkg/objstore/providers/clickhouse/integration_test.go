@@ -191,7 +191,7 @@ func TestClickHouseIntegrationCleanupSQL(t *testing.T) {
 	require.NotContains(t, candidates, latest)
 
 	for partition, partitionCandidates := range candidatesByPartition {
-		require.NoError(t, store.DeleteGenerations(ctx, partition, partitionCandidates), "delete cleanup candidates in partition %d", partition)
+		require.NoError(t, store.DeleteGenerations(ctx, partitionCandidates), "delete cleanup candidates in partition %d", partition)
 	}
 	for _, candidate := range candidates {
 		require.Zero(t, integrationGenerationRows(t, ctx, store, store.objectsTable, candidate), "candidate manifest rows remain")

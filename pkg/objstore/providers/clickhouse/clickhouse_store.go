@@ -708,13 +708,12 @@ func cleanupGraceMilliseconds(grace time.Duration) int64 {
 	return milliseconds
 }
 
-func (s *clickhouseStore) DeleteGenerations(ctx context.Context, partition uint32, candidates []cleanupCandidate) error {
+func (s *clickhouseStore) DeleteGenerations(ctx context.Context, candidates []cleanupCandidate) error {
 	if len(candidates) == 0 {
 		return nil
 	}
 	placeholders := make([]string, len(candidates))
-	args := make([]any, 0, 1+len(candidates)*2)
-	args = append(args, uint64(partition))
+	args := make([]any, 0, len(candidates)*2)
 	for i, candidate := range candidates {
 		placeholders[i] = "(?, ?)"
 		args = append(args, candidate.Key, candidate.Generation)
@@ -723,11 +722,13 @@ func (s *clickhouseStore) DeleteGenerations(ctx context.Context, partition uint3
 	// regular background merges reclaim the space. A classic ALTER DELETE
 	// mutation instead rewrites the partition's parts and re-links every
 	// other part on each pass, which kept tens of GiB of transient inactive
-	// parts alive on frequent cleanup schedules.
+	// parts alive on frequent cleanup schedules. Candidates may span any
+	// number of partitions: one statement per table keeps a cleanup pass at
+	// one mutation per table.
 	for _, table := range []string{s.chunksTable, s.objectsTable} {
 		queryCtx, cancel := s.queryContext(ctx)
 		err := s.conn.Exec(queryCtx, fmt.Sprintf(
-			"DELETE FROM %s IN PARTITION ? WHERE (object_key, generation) IN (%s) SETTINGS lightweight_deletes_sync = 2",
+			"DELETE FROM %s WHERE (object_key, generation) IN (%s) SETTINGS lightweight_deletes_sync = 2",
 			table, strings.Join(placeholders, ", "),
 		), args...)
 		cancel()

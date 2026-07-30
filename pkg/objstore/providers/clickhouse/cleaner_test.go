@@ -189,17 +189,13 @@ func TestBucketCleanupReportsOneFailedBatch(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	first := cleanupCandidate{Key: "a", Generation: uuid.New()}
 	second := cleanupCandidate{Key: "b", Generation: uuid.New()}
-	type cleanupDeleteCall struct {
-		partition  uint32
-		candidates []cleanupCandidate
-	}
-	deleted := make(chan cleanupDeleteCall, 1)
+	deleted := make(chan []cleanupCandidate, 1)
 	store := &fakeStore{
 		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
 			return []cleanupCandidate{first, second}, nil
 		},
-		cleanupDel: func(_ context.Context, partition uint32, candidates []cleanupCandidate) error {
-			deleted <- cleanupDeleteCall{partition: partition, candidates: candidates}
+		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
+			deleted <- candidates
 			return errors.New("mutation failed")
 		},
 	}
@@ -210,8 +206,7 @@ func TestBucketCleanupReportsOneFailedBatch(t *testing.T) {
 	require.NoError(t, err)
 	ticker.ticks <- time.Now()
 	call := <-deleted
-	require.Zero(t, call.partition)
-	require.Equal(t, []cleanupCandidate{first, second}, call.candidates)
+	require.Equal(t, []cleanupCandidate{first, second}, call)
 	require.Eventually(t, func() bool {
 		return testutil.ToFloat64(bucket.metrics.cleanupFailures) == 1
 	}, time.Second, time.Millisecond)
@@ -235,7 +230,7 @@ func TestBucketCleanupBoundsDefensiveDeletionBatch(t *testing.T) {
 		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
 			return candidates, nil
 		},
-		cleanupDel: func(_ context.Context, _ uint32, candidates []cleanupCandidate) error {
+		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
 			deleted = append(deleted, candidates...)
 			return nil
 		},
@@ -256,16 +251,16 @@ func TestBucketCleanupSerializesPartitionsAndRotatesAtBatchLimit(t *testing.T) {
 	cfg.PartitionCount = 4
 	cfg.Cleanup.MutationBatchSize = 2
 	var selected []uint32
-	var deleted []uint32
+	var limits []int
+	var batches [][]cleanupCandidate
 	store := &fakeStore{
 		cleanupFn: func(_ context.Context, partition uint32, _ time.Duration, limit int) ([]cleanupCandidate, error) {
 			selected = append(selected, partition)
-			require.Equal(t, 2-len(deleted)%2, limit)
+			limits = append(limits, limit)
 			return []cleanupCandidate{{Key: "key", Generation: uuid.New()}}, nil
 		},
-		cleanupDel: func(_ context.Context, partition uint32, candidates []cleanupCandidate) error {
-			deleted = append(deleted, partition)
-			require.Len(t, candidates, 1)
+		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
+			batches = append(batches, candidates)
 			return nil
 		},
 	}
@@ -276,7 +271,12 @@ func TestBucketCleanupSerializesPartitionsAndRotatesAtBatchLimit(t *testing.T) {
 	bucket.cleanupPass(context.Background())
 
 	require.Equal(t, []uint32{0, 1, 2, 3}, selected)
-	require.Equal(t, []uint32{0, 1, 2, 3}, deleted)
+	require.Equal(t, []int{2, 1, 2, 1}, limits)
+	// Each pass issues exactly one deletion batch regardless of how many
+	// partitions contributed candidates.
+	require.Len(t, batches, 2)
+	require.Len(t, batches[0], 2)
+	require.Len(t, batches[1], 2)
 	require.Equal(t, float64(4), testutil.ToFloat64(bucket.metrics.cleanupDeletions))
 }
 
@@ -314,7 +314,7 @@ func TestBucketCloseCancelsCleanupBeforeClosingStore(t *testing.T) {
 		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
 			return []cleanupCandidate{{Key: "key", Generation: uuid.New()}}, nil
 		},
-		cleanupDel: func(ctx context.Context, _ uint32, _ []cleanupCandidate) error {
+		cleanupDel: func(ctx context.Context, _ []cleanupCandidate) error {
 			close(entered)
 			<-ctx.Done()
 			return ctx.Err()

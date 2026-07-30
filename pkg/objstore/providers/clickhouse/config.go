@@ -23,7 +23,7 @@ const (
 	maxReadPrefetchBytes          = 256 * 1024 * 1024
 	objectStorePartitionCount     = 64
 	maxClickHouseIdentifierLength = 255
-	maxCleanupMutationBatchSize   = 1000
+	maxCleanupMutationBatchSize   = 20000
 )
 
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

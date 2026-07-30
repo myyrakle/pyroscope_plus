@@ -47,7 +47,7 @@ type fakeStore struct {
 	deleteErr   error
 	cleanupErr  error
 	cleanupFn   func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error)
-	cleanupDel  func(context.Context, uint32, []cleanupCandidate) error
+	cleanupDel  func(context.Context, []cleanupCandidate) error
 
 	begin    func(context.Context, manifest) (manifest, error)
 	commit   func(context.Context, manifest) error
@@ -213,9 +213,9 @@ func (s *fakeStore) CleanupCandidates(ctx context.Context, partition uint32, gra
 	return nil, s.cleanupErr
 }
 
-func (s *fakeStore) DeleteGenerations(ctx context.Context, partition uint32, candidates []cleanupCandidate) error {
+func (s *fakeStore) DeleteGenerations(ctx context.Context, candidates []cleanupCandidate) error {
 	if s.cleanupDel != nil {
-		return s.cleanupDel(ctx, partition, candidates)
+		return s.cleanupDel(ctx, candidates)
 	}
 	return nil
 }
