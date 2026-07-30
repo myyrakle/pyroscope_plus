@@ -390,7 +390,7 @@ func setupBenchmarkFixture(b *testing.B) *benchmarkFixture {
 	}
 
 	logger := test.NewTestingLogger(b)
-	reader := NewBlockReader(logger, &objstore.ReaderAtBucket{Bucket: bucket}, nil)
+	reader := NewBlockReader(logger, &objstore.ReaderAtBucket{Bucket: bucket}, nil, 8)
 
 	meta := make([]*metastorev1.BlockMeta, len(blocks))
 	for i, block := range blocks {

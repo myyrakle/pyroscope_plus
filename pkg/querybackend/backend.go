@@ -26,11 +26,13 @@ type Config struct {
 	Address          string            `yaml:"address" category:"advanced"`
 	GRPCClientConfig grpcclient.Config `yaml:"grpc_client_config" doc:"description=Configures the gRPC client used to communicate between the query-frontends and the query-schedulers."`
 	ClientTimeout    time.Duration     `yaml:"client_timeout" category:"advanced"`
+	BlockConcurrency int               `yaml:"block_concurrency" category:"advanced"`
 }
 
 func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.StringVar(&cfg.Address, "query-backend.address", "localhost:9095", "")
 	f.DurationVar(&cfg.ClientTimeout, "query-backend.client-timeout", 30*time.Second, "Timeout for query-backend client requests.")
+	f.IntVar(&cfg.BlockConcurrency, "query-backend.block-concurrency", 8, "Maximum number of block objects processed concurrently across all queries. Bounds query memory usage. 0 disables the limit.")
 	cfg.GRPCClientConfig.RegisterFlagsWithPrefix("query-backend.grpc-client-config", f)
 }
 
