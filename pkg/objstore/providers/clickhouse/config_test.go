@@ -298,9 +298,9 @@ func TestCleanupConfigValidateMutationBatchSizeBounds(t *testing.T) {
 		wantErr string
 	}{
 		{name: "minimum accepted", size: 1},
-		{name: "maximum accepted", size: 1000},
+		{name: "maximum accepted", size: 20000},
 		{name: "non-positive rejected", size: 0, wantErr: "ClickHouse cleanup mutation batch size must be positive"},
-		{name: "above maximum rejected", size: 1001, wantErr: "ClickHouse cleanup mutation batch size must not exceed 1000"},
+		{name: "above maximum rejected", size: 20001, wantErr: "ClickHouse cleanup mutation batch size must not exceed 20000"},
 	}
 
 	for _, tt := range tests {

@@ -301,9 +301,15 @@ func (b *Bucket) cleanupPass(ctx context.Context) {
 		b.metrics.cleanupDuration.Observe(time.Since(started).Seconds())
 	}()
 
+	// Collect candidates across partitions first and delete them in one
+	// batch per pass: every DELETE creates a table-wide mutation (parts are
+	// re-versioned even when untouched), so issuing one mutation per
+	// partition per pass floods the part set faster than expired parts are
+	// reclaimed. One pass now costs at most one mutation per table.
 	partitionCount := uint32(max(b.cfg.PartitionCount, 1))
 	startPartition := b.cleanupPartition % partitionCount
 	remaining := b.cfg.Cleanup.MutationBatchSize
+	batch := make([]cleanupCandidate, 0, remaining)
 	for scanned := uint32(0); scanned < partitionCount && remaining > 0; scanned++ {
 		partition := (startPartition + scanned) % partitionCount
 		b.cleanupPartition = (partition + 1) % partitionCount
@@ -319,21 +325,22 @@ func (b *Bucket) cleanupPass(ctx context.Context) {
 			candidates = candidates[:remaining]
 		}
 		b.metrics.cleanupCandidates.Add(float64(len(candidates)))
-		if len(candidates) == 0 {
-			continue
-		}
-		mutationStarted := time.Now()
-		err = b.store.DeleteGenerations(ctx, partition, candidates)
-		b.metrics.cleanupMutationDuration.Observe(time.Since(mutationStarted).Seconds())
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			b.metrics.cleanupFailures.Inc()
-			level.Warn(b.logger).Log("msg", "failed to delete ClickHouse object generations", "partition", partition, "err", err)
-			return
-		}
-		b.metrics.cleanupDeletions.Add(float64(len(candidates)))
+		batch = append(batch, candidates...)
 		remaining -= len(candidates)
 	}
+	if len(batch) == 0 {
+		return
+	}
+	mutationStarted := time.Now()
+	err := b.store.DeleteGenerations(ctx, batch)
+	b.metrics.cleanupMutationDuration.Observe(time.Since(mutationStarted).Seconds())
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		b.metrics.cleanupFailures.Inc()
+		level.Warn(b.logger).Log("msg", "failed to delete ClickHouse object generations", "err", err)
+		return
+	}
+	b.metrics.cleanupDeletions.Add(float64(len(batch)))
 }

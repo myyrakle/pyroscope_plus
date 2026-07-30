@@ -399,7 +399,7 @@ storage:
       [grace: <duration> | default = 24h]
 
       # Maximum number of ClickHouse object generations per cleanup mutation (up
-      # to 1000).
+      # to 20000).
       # CLI flag: -storage.clickhouse.cleanup.mutation-batch-size
       [mutation_batch_size: <int> | default = 100]
 
