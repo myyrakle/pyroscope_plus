@@ -719,10 +719,15 @@ func (s *clickhouseStore) DeleteGenerations(ctx context.Context, partition uint3
 		placeholders[i] = "(?, ?)"
 		args = append(args, candidate.Key, candidate.Generation)
 	}
+	// Lightweight deletes only mark rows via the _row_exists mask and let
+	// regular background merges reclaim the space. A classic ALTER DELETE
+	// mutation instead rewrites the partition's parts and re-links every
+	// other part on each pass, which kept tens of GiB of transient inactive
+	// parts alive on frequent cleanup schedules.
 	for _, table := range []string{s.chunksTable, s.objectsTable} {
 		queryCtx, cancel := s.queryContext(ctx)
 		err := s.conn.Exec(queryCtx, fmt.Sprintf(
-			"ALTER TABLE %s DELETE IN PARTITION ? WHERE (object_key, generation) IN (%s) SETTINGS mutations_sync = 2",
+			"DELETE FROM %s IN PARTITION ? WHERE (object_key, generation) IN (%s) SETTINGS lightweight_deletes_sync = 2",
 			table, strings.Join(placeholders, ", "),
 		), args...)
 		cancel()

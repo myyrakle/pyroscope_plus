@@ -822,7 +822,7 @@ func TestClickHouseStoreCleanupCandidatesProtectsValidLatestGenerations(t *testi
 	}, candidates)
 }
 
-func TestClickHouseStoreDeleteGenerationsUsesTwoParameterizedSynchronousMutations(t *testing.T) {
+func TestClickHouseStoreDeleteGenerationsUsesTwoParameterizedLightweightDeletes(t *testing.T) {
 	candidates := []cleanupCandidate{
 		{Key: "quoted' key", Generation: uuid.New()},
 		{Key: "second", Generation: uuid.New()},
@@ -833,8 +833,10 @@ func TestClickHouseStoreDeleteGenerationsUsesTwoParameterizedSynchronousMutation
 	require.NoError(t, store.DeleteGenerations(context.Background(), 17, candidates))
 	require.Len(t, conn.execCalls, 2)
 	for _, call := range conn.execCalls {
-		require.Contains(t, call.query, "DELETE IN PARTITION ? WHERE (object_key, generation) IN ((?, ?), (?, ?))")
-		require.Contains(t, call.query, "SETTINGS mutations_sync = 2")
+		require.Contains(t, call.query, "IN PARTITION ? WHERE (object_key, generation) IN ((?, ?), (?, ?))")
+		require.Contains(t, call.query, "DELETE FROM")
+		require.Contains(t, call.query, "SETTINGS lightweight_deletes_sync = 2")
+		require.NotContains(t, call.query, "ALTER TABLE")
 		for _, candidate := range candidates {
 			require.NotContains(t, call.query, candidate.Key)
 			require.NotContains(t, call.query, candidate.Generation.String())
