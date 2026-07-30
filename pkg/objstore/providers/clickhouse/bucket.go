@@ -36,11 +36,81 @@ type Bucket struct {
 	store            store
 	versionClock     *versionClock
 	metrics          *providerMetrics
+	manifests        *manifestCache
+	now              func() time.Time
 	cleanupPartition uint32
 	cleanupCancel    context.CancelFunc
 	cleanupDone      chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
+}
+
+// manifestCache memoizes latest live manifests for a short TTL. Objects are
+// immutable once committed, so a cached manifest only delays visibility of
+// same-key overwrites and deletes; local writers invalidate their key.
+// It bounds the query fan-out of ranged reads: without it every ReadAt issues
+// a manifest lookup before its chunk query, which under parquet page reads
+// exhausts the ClickHouse connection pool.
+type manifestCache struct {
+	ttl        time.Duration
+	maxEntries int
+	mu         sync.Mutex
+	entries    map[string]manifestCacheEntry
+}
+
+type manifestCacheEntry struct {
+	value     manifest
+	expiresAt time.Time
+}
+
+const manifestCacheMaxEntries = 16384
+
+func newManifestCache(ttl time.Duration) *manifestCache {
+	if ttl <= 0 {
+		return nil
+	}
+	return &manifestCache{
+		ttl:        ttl,
+		maxEntries: manifestCacheMaxEntries,
+		entries:    make(map[string]manifestCacheEntry),
+	}
+}
+
+func (c *manifestCache) get(key string, now time.Time) (manifest, bool) {
+	if c == nil {
+		return manifest{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || now.After(entry.expiresAt) {
+		delete(c.entries, key)
+		return manifest{}, false
+	}
+	return entry.value, true
+}
+
+func (c *manifestCache) put(key string, value manifest, now time.Time) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= c.maxEntries {
+		// Full reset keeps the cache bounded without tracking recency; a
+		// cold cache only costs one manifest query per live object.
+		c.entries = make(map[string]manifestCacheEntry)
+	}
+	c.entries[key] = manifestCacheEntry{value: value, expiresAt: now.Add(c.ttl)}
+}
+
+func (c *manifestCache) invalidate(key string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
 }
 
 // NewBucketClient creates and initializes a ClickHouse object store bucket.
@@ -104,6 +174,8 @@ func newBucketWithStoreOptions(cfg Config, name string, logger log.Logger, persi
 		store:        persistence,
 		versionClock: newVersionClock(options.now),
 		metrics:      metrics,
+		manifests:    newManifestCache(cfg.ManifestCacheTTL),
+		now:          options.now,
 	}
 	bucket.startCleanup(options.newTicker)
 	return bucket, nil
@@ -202,6 +274,7 @@ func (b *Bucket) Upload(ctx context.Context, key string, reader io.Reader, _ ...
 	if err := b.commitVisibleUpload(uploadCtx, upload); err != nil {
 		return fmt.Errorf("upload ClickHouse object %q: commit upload: %w", key, err)
 	}
+	b.manifests.invalidate(key)
 	return nil
 }
 
@@ -277,7 +350,9 @@ func (b *Bucket) Delete(ctx context.Context, key string) (err error) {
 	if key == "" {
 		return errors.New("delete ClickHouse object: object key must not be empty")
 	}
-	latest, err := b.latestLiveManifest(ctx, key)
+	// Version allocation must see the persisted latest manifest, not a
+	// cached one; the local cache is invalidated once the tombstone lands.
+	latest, err := b.latestLiveManifestUncached(ctx, key)
 	if err != nil {
 		return fmt.Errorf("delete ClickHouse object %q: %w", key, err)
 	}
@@ -305,6 +380,7 @@ func (b *Bucket) Delete(ctx context.Context, key string) (err error) {
 			key, ErrConcurrentMutation, tombstone.Generation, winner.Generation, winner.State, winner.Version,
 		)
 	}
+	b.manifests.invalidate(key)
 	return nil
 }
 
@@ -316,6 +392,18 @@ func (b *Bucket) nextVersionAfter(current uint64) (uint64, error) {
 }
 
 func (b *Bucket) latestLiveManifest(ctx context.Context, key string) (manifest, error) {
+	if cached, ok := b.manifests.get(key, b.now()); ok {
+		return cached, nil
+	}
+	latest, err := b.latestLiveManifestUncached(ctx, key)
+	if err != nil {
+		return manifest{}, err
+	}
+	b.manifests.put(key, latest, b.now())
+	return latest, nil
+}
+
+func (b *Bucket) latestLiveManifestUncached(ctx context.Context, key string) (manifest, error) {
 	if key == "" {
 		return manifest{}, errors.New("read ClickHouse object: object key must not be empty")
 	}

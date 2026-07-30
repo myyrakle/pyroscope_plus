@@ -368,6 +368,12 @@ storage:
     # CLI flag: -storage.clickhouse.max-upload-duration
     [max_upload_duration: <duration> | default = 30m]
 
+    # (advanced) How long readers may reuse a cached object manifest instead of
+    # querying ClickHouse. Objects are immutable, so this only delays visibility
+    # of same-key overwrites and deletes. 0 disables the cache.
+    # CLI flag: -storage.clickhouse.manifest-cache-ttl
+    [manifest_cache_ttl: <duration> | default = 15s]
+
     # Create required ClickHouse tables when they do not exist.
     # CLI flag: -storage.clickhouse.auto-create-tables
     [auto_create_tables: <boolean> | default = true]

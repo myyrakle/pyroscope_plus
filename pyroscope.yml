@@ -18,6 +18,11 @@ storage:
     username: ${CLICKHOUSE_USER}
     password: ${CLICKHOUSE_PASSWORD}
     secure: false
+    # Long-range queries fan out into many concurrent chunk reads; the
+    # default pool of 16 connections exhausts and reads fail with
+    # "clickhouse: acquire conn timeout".
+    max_open_connections: 64
+    max_idle_connections: 32
     auto_create_tables: ${CLICKHOUSE_AUTO_CREATE_TABLES}
     cleanup:
       # Must stay enabled on exactly one process: v2 compaction constantly
