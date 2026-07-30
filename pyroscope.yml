@@ -23,6 +23,12 @@ storage:
     # "clickhouse: acquire conn timeout".
     max_open_connections: 64
     max_idle_connections: 32
+    # Pool-acquire waits are bounded by dial_timeout: at the 5s default a
+    # saturated pool fails reads instead of queueing them briefly.
+    dial_timeout: 30s
+    # 8 prefetched chunks pin 32MiB per open section reader; wide queries
+    # open hundreds of sections concurrently and spike memory.
+    read_prefetch_chunks: 4
     auto_create_tables: ${CLICKHOUSE_AUTO_CREATE_TABLES}
     cleanup:
       # Must stay enabled on exactly one process: v2 compaction constantly
