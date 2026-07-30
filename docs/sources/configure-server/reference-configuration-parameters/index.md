@@ -374,6 +374,12 @@ storage:
     # CLI flag: -storage.clickhouse.manifest-cache-ttl
     [manifest_cache_ttl: <duration> | default = 15s]
 
+    # (advanced) Maximum chunk payload bytes all object readers may hold in
+    # memory at once. Reads wait when the budget is exhausted, bounding
+    # query-time memory usage. 0 disables the limit.
+    # CLI flag: -storage.clickhouse.max-inflight-read-bytes
+    [max_inflight_read_bytes: <int> | default = 536870912]
+
     # Create required ClickHouse tables when they do not exist.
     # CLI flag: -storage.clickhouse.auto-create-tables
     [auto_create_tables: <boolean> | default = true]

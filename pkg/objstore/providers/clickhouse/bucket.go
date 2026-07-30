@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/thanos-io/objstore"
+	"golang.org/x/sync/semaphore"
 )
 
 type storeConstructor func(Config) (store, error)
@@ -37,6 +38,7 @@ type Bucket struct {
 	versionClock     *versionClock
 	metrics          *providerMetrics
 	manifests        *manifestCache
+	readBudget       *semaphore.Weighted
 	now              func() time.Time
 	cleanupPartition uint32
 	cleanupCancel    context.CancelFunc
@@ -176,6 +178,11 @@ func newBucketWithStoreOptions(cfg Config, name string, logger log.Logger, persi
 		metrics:      metrics,
 		manifests:    newManifestCache(cfg.ManifestCacheTTL),
 		now:          options.now,
+	}
+	if cfg.MaxInflightReadBytes > 0 {
+		// Bounds the chunk payload bytes all readers hold at once, so wide
+		// query fan-outs queue instead of exhausting process memory.
+		bucket.readBudget = semaphore.NewWeighted(int64(cfg.MaxInflightReadBytes))
 	}
 	bucket.startCleanup(options.newTicker)
 	return bucket, nil

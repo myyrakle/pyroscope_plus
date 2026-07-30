@@ -19,6 +19,7 @@ const (
 	defaultReadPrefetchChunks     = 8
 	maxReadPrefetchChunks         = 64
 	defaultMaxReadPrefetchBytes   = 32 * 1024 * 1024
+	defaultMaxInflightReadBytes   = 512 * 1024 * 1024
 	maxReadPrefetchBytes          = 256 * 1024 * 1024
 	objectStorePartitionCount     = 64
 	maxClickHouseIdentifierLength = 255
@@ -59,6 +60,7 @@ type Config struct {
 	PartitionCount       int                    `yaml:"partition_count" category:"advanced"`
 	MaxUploadDuration    time.Duration          `yaml:"max_upload_duration" category:"advanced"`
 	ManifestCacheTTL     time.Duration          `yaml:"manifest_cache_ttl" category:"advanced"`
+	MaxInflightReadBytes int                    `yaml:"max_inflight_read_bytes" category:"advanced"`
 	AutoCreateTables     bool                   `yaml:"auto_create_tables"`
 	Cleanup              CleanupConfig          `yaml:"cleanup"`
 }
@@ -104,6 +106,7 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 	f.IntVar(&cfg.PartitionCount, prefix+"clickhouse.partition-count", objectStorePartitionCount, "Fixed ClickHouse object-store schema partition count.")
 	f.DurationVar(&cfg.MaxUploadDuration, prefix+"clickhouse.max-upload-duration", 30*time.Minute, "Maximum duration allowed for an object upload.")
 	f.DurationVar(&cfg.ManifestCacheTTL, prefix+"clickhouse.manifest-cache-ttl", 15*time.Second, "How long readers may reuse a cached object manifest instead of querying ClickHouse. Objects are immutable, so this only delays visibility of same-key overwrites and deletes. 0 disables the cache.")
+	f.IntVar(&cfg.MaxInflightReadBytes, prefix+"clickhouse.max-inflight-read-bytes", defaultMaxInflightReadBytes, "Maximum chunk payload bytes all object readers may hold in memory at once. Reads wait when the budget is exhausted, bounding query-time memory usage. 0 disables the limit.")
 	f.BoolVar(&cfg.AutoCreateTables, prefix+"clickhouse.auto-create-tables", true, "Create required ClickHouse tables when they do not exist.")
 	cfg.Cleanup.RegisterFlagsWithPrefix(prefix+"clickhouse.cleanup.", f)
 }
@@ -184,6 +187,13 @@ func (cfg *Config) validateReadPrefetch() error {
 	}
 	if uint64(cfg.ChunkSize) > uint64(cfg.MaxReadPrefetchBytes)/uint64(cfg.ReadPrefetchChunks) {
 		return errors.New("ClickHouse chunk size times read prefetch chunks must not exceed maximum read prefetch bytes")
+	}
+	if cfg.MaxInflightReadBytes < 0 {
+		return errors.New("ClickHouse maximum in-flight read bytes must not be negative")
+	}
+	if cfg.MaxInflightReadBytes > 0 && cfg.MaxInflightReadBytes < cfg.MaxReadPrefetchBytes {
+		// A single reader batch must fit into the budget, or it would block forever.
+		return errors.New("ClickHouse maximum in-flight read bytes must be at least the maximum read prefetch bytes")
 	}
 	return nil
 }

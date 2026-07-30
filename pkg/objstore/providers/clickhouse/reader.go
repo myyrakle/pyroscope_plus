@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/thanos-io/objstore"
+	"golang.org/x/sync/semaphore"
 )
 
 // Get opens a reader pinned to the latest live object generation.
@@ -52,7 +53,7 @@ func (b *Bucket) openReader(ctx context.Context, key string, offset, length int6
 		logicalSize = uint64(length)
 	}
 
-	return newChunkReader(ctx, b.store, b.metrics, object, start, logicalSize, b.cfg.ReadPrefetchChunks), nil
+	return newChunkReader(ctx, b.store, b.metrics, object, start, logicalSize, b.cfg.ReadPrefetchChunks, b.readBudget), nil
 }
 
 // Attributes returns the committed manifest's object size and event time.
@@ -139,6 +140,8 @@ type chunkReader struct {
 	start    uint64
 	end      uint64
 	prefetch uint32
+	budget   *semaphore.Weighted
+	held     int64
 	mu       sync.Mutex
 	next     uint32
 	last     uint32
@@ -150,7 +153,7 @@ type chunkReader struct {
 	closed   bool
 }
 
-func newChunkReader(ctx context.Context, persistence store, metrics *providerMetrics, object manifest, start, size uint64, prefetch int) *chunkReader {
+func newChunkReader(ctx context.Context, persistence store, metrics *providerMetrics, object manifest, start, size uint64, prefetch int, budget *semaphore.Weighted) *chunkReader {
 	readerCtx, cancel := context.WithCancel(ctx)
 	reader := &chunkReader{
 		ctx:      readerCtx,
@@ -161,6 +164,7 @@ func newChunkReader(ctx context.Context, persistence store, metrics *providerMet
 		start:    start,
 		end:      start + size,
 		prefetch: uint32(prefetch),
+		budget:   budget,
 		done:     size == 0,
 	}
 	if size > 0 {
@@ -226,9 +230,15 @@ func (r *chunkReader) refill() error {
 	first := r.next
 	count := min(uint64(r.prefetch), uint64(r.last)-uint64(first)+1)
 	last := first + uint32(count-1)
+	if err := r.acquireBudget(first, last); err != nil {
+		return fmt.Errorf("read ClickHouse object %q chunks %d-%d: acquire read budget: %w", r.manifest.Key, first, last, err)
+	}
 	finishQuery := r.metrics.startOperation("chunk_query")
 	chunks, err := r.store.Chunks(r.ctx, r.manifest, first, last, r.start, r.end)
 	finishQuery(err)
+	if err != nil {
+		r.releaseBudget()
+	}
 	r.metrics.chunkQueries.Inc()
 	var prefetchedBytes int
 	for i := range chunks {
@@ -242,11 +252,13 @@ func (r *chunkReader) refill() error {
 		return fmt.Errorf("read ClickHouse object %q generation %s chunks %d-%d: %w", r.manifest.Key, r.manifest.Generation, first, last, err)
 	}
 	if len(chunks) != int(count) {
+		r.releaseBudget()
 		return corruptManifest(r.manifest, fmt.Sprintf("chunk request %d-%d returned %d chunks", first, last, len(chunks)))
 	}
 	for i := range chunks {
 		expectedIndex := first + uint32(i)
 		if chunks[i].Index != expectedIndex {
+			r.releaseBudget()
 			return corruptManifest(r.manifest, fmt.Sprintf("chunk request %d-%d returned index %d at position %d", first, last, chunks[i].Index, i))
 		}
 		expectedLength := uint64(r.manifest.ChunkSize)
@@ -254,6 +266,7 @@ func (r *chunkReader) refill() error {
 			expectedLength = r.manifest.Size - uint64(chunks[i].Index)*uint64(r.manifest.ChunkSize)
 		}
 		if chunks[i].FullLength != expectedLength {
+			r.releaseBudget()
 			return corruptManifest(r.manifest, fmt.Sprintf("chunk %d length is %d, expected %d", chunks[i].Index, chunks[i].FullLength, expectedLength))
 		}
 		chunkStart := uint64(expectedIndex) * uint64(r.manifest.ChunkSize)
@@ -263,6 +276,7 @@ func (r *chunkReader) refill() error {
 			sliceEnd = sliceStart
 		}
 		if uint64(len(chunks[i].Data)) != sliceEnd-sliceStart {
+			r.releaseBudget()
 			return corruptManifest(r.manifest, fmt.Sprintf("chunk %d slice length is %d, expected %d", chunks[i].Index, len(chunks[i].Data), sliceEnd-sliceStart))
 		}
 	}
@@ -287,6 +301,44 @@ func (r *chunkReader) activateChunk() {
 func (r *chunkReader) releaseBatch() {
 	r.batch = nil
 	r.batchPos = 0
+	r.releaseBudget()
+}
+
+// acquireBudget reserves the expected payload bytes of the chunk batch
+// first..last (sliced to [r.start, r.end)) against the shared read budget.
+// It blocks until enough budget is available or the reader context ends.
+func (r *chunkReader) acquireBudget(first, last uint32) error {
+	if r.budget == nil {
+		return nil
+	}
+	var expected int64
+	for index := first; index <= last; index++ {
+		length := uint64(r.manifest.ChunkSize)
+		if index == r.manifest.ChunkCount-1 {
+			length = r.manifest.Size - uint64(index)*uint64(r.manifest.ChunkSize)
+		}
+		chunkStart := uint64(index) * uint64(r.manifest.ChunkSize)
+		sliceStart := max(r.start, chunkStart)
+		sliceEnd := min(r.end, chunkStart+length)
+		if sliceEnd > sliceStart {
+			expected += int64(sliceEnd - sliceStart)
+		}
+	}
+	if expected == 0 {
+		return nil
+	}
+	if err := r.budget.Acquire(r.ctx, expected); err != nil {
+		return err
+	}
+	r.held = expected
+	return nil
+}
+
+func (r *chunkReader) releaseBudget() {
+	if r.budget != nil && r.held > 0 {
+		r.budget.Release(r.held)
+		r.held = 0
+	}
 }
 
 func (r *chunkReader) contextErr() error {
