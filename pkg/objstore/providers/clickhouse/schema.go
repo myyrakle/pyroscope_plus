@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS %s
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) %% 64
-ORDER BY (object_key, version, generation, state)`), name), nil
+ORDER BY (object_key, version, generation, state)
+SETTINGS old_parts_lifetime = 60`), name), nil
 }
 
 func chunksDDL(database, table string) (string, error) {
@@ -141,7 +142,8 @@ CREATE TABLE IF NOT EXISTS %s
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) %% 64
-ORDER BY (object_key, generation, chunk_index)`), name), nil
+ORDER BY (object_key, generation, chunk_index)
+SETTINGS old_parts_lifetime = 60`), name), nil
 }
 
 func latestAggregateDDL(database, table string) (string, error) {
@@ -157,7 +159,8 @@ CREATE TABLE IF NOT EXISTS %s
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY cityHash64(object_key) %% 64
-ORDER BY object_key`), name, latestManifestAggregateType), nil
+ORDER BY object_key
+SETTINGS old_parts_lifetime = 60`), name, latestManifestAggregateType), nil
 }
 
 func latestMaterializedViewDDL(database, objectsTable, latestTable, view string) (string, error) {

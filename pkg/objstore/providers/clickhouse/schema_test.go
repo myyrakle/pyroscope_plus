@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS `+"`profile_db`.`objects`"+`
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) % 64
-ORDER BY (object_key, version, generation, state)`), ddl)
+ORDER BY (object_key, version, generation, state)
+SETTINGS old_parts_lifetime = 60`), ddl)
 }
 
 func TestChunksDDL(t *testing.T) {
@@ -123,7 +124,8 @@ CREATE TABLE IF NOT EXISTS `+"`profile_db`.`chunks`"+`
 )
 ENGINE = MergeTree
 PARTITION BY cityHash64(object_key) % 64
-ORDER BY (object_key, generation, chunk_index)`), ddl)
+ORDER BY (object_key, generation, chunk_index)
+SETTINGS old_parts_lifetime = 60`), ddl)
 }
 
 func TestLatestAggregateDDL(t *testing.T) {
