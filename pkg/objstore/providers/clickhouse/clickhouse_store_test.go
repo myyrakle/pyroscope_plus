@@ -240,7 +240,49 @@ func TestClickHouseStoreInitValidatesLatestSchemaDefinition(t *testing.T) {
 	require.Contains(t, conn.selectCalls[3].query, "FROM system.tables")
 }
 
-func TestClickHouseStoreInitRejectsLegacyV1Schema(t *testing.T) {
+func TestClickHouseStoreInitAcceptsUnpartitionedAndLegacyPartitionedTables(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		partitionKey string
+	}{
+		{name: "unpartitioned", partitionKey: ""},
+		{name: "legacy 64-way hash", partitionKey: "cityHash64(object_key) % 64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &fakeClickHouseConnection{
+				columns: map[string][]columnInfo{
+					"objects":        columnsFromSchema(objectsSchema),
+					"chunks":         columnsFromSchema(chunksSchema),
+					"objects_latest": latestManifestColumnsForTest(),
+				},
+				tables: map[string]fakeSystemTable{
+					"objects": {
+						Engine:       "MergeTree",
+						SortingKey:   "object_key, version, generation, state",
+						PartitionKey: tc.partitionKey,
+					},
+					"chunks": {
+						Engine:       "MergeTree",
+						SortingKey:   "object_key, generation, chunk_index",
+						PartitionKey: tc.partitionKey,
+					},
+					"objects_latest": {
+						Engine:       "AggregatingMergeTree",
+						SortingKey:   "object_key",
+						PartitionKey: tc.partitionKey,
+					},
+					"objects_latest_mv": validLatestMaterializedViewForTest(t),
+				},
+			}
+			store := testClickHouseStore(t, conn)
+			store.cfg.AutoCreateTables = false
+
+			require.NoError(t, store.Init(context.Background()))
+		})
+	}
+}
+
+func TestClickHouseStoreInitRejectsForeignPartitionKey(t *testing.T) {
 	conn := &fakeClickHouseConnection{
 		columns: map[string][]columnInfo{
 			"objects":        columnsFromSchema(objectsSchema),
@@ -249,18 +291,12 @@ func TestClickHouseStoreInitRejectsLegacyV1Schema(t *testing.T) {
 		},
 		tables: map[string]fakeSystemTable{
 			"objects": {
-				Engine:     "MergeTree",
-				SortingKey: "object_key, version, generation, state",
+				Engine:       "MergeTree",
+				SortingKey:   "object_key, version, generation, state",
+				PartitionKey: "toDate(event_at)",
 			},
-			"chunks": {
-				Engine:     "MergeTree",
-				SortingKey: "object_key, generation, chunk_index",
-			},
-			"objects_latest": {
-				Engine:       "AggregatingMergeTree",
-				SortingKey:   "object_key",
-				PartitionKey: "cityHash64(object_key) % 64",
-			},
+			"chunks":            validChunksTableForTest(),
+			"objects_latest":    validLatestTableForTest(),
 			"objects_latest_mv": validLatestMaterializedViewForTest(t),
 		},
 	}
@@ -268,8 +304,8 @@ func TestClickHouseStoreInitRejectsLegacyV1Schema(t *testing.T) {
 	store.cfg.AutoCreateTables = false
 
 	err := store.Init(context.Background())
-	require.ErrorContains(t, err, "legacy ClickHouse object store V1 schema")
-	require.ErrorContains(t, err, "recreate all ClickHouse object-store tables")
+	require.ErrorContains(t, err, "incompatible partition key")
+	require.ErrorContains(t, err, "expected unpartitioned or cityHash64(object_key) % 64")
 }
 
 func TestClickHouseStoreInitRejectsInvalidLatestMaterializedView(t *testing.T) {
@@ -748,7 +784,7 @@ func TestClickHouseStoreCleanupCandidatesUsesSafeBoundedQuery(t *testing.T) {
 	}}
 	store := testClickHouseStore(t, conn)
 
-	candidates, err := store.CleanupCandidates(context.Background(), 17, grace, 7)
+	candidates, err := store.CleanupCandidates(context.Background(), grace, 7)
 	require.NoError(t, err)
 	require.Equal(t, []cleanupCandidate{{Key: "key", Generation: generation}}, candidates)
 	require.Len(t, conn.selectCalls, 1)
@@ -756,8 +792,8 @@ func TestClickHouseStoreCleanupCandidatesUsesSafeBoundedQuery(t *testing.T) {
 	require.Contains(t, call.query, "partition_operations AS")
 	require.Contains(t, call.query, "now64(3) AS cleanup_now")
 	require.Contains(t, call.query, "toIntervalMillisecond(?) AS cleanup_grace")
-	require.Contains(t, call.query, "WHERE _partition_id = ?")
-	require.NotContains(t, call.query, "PREWHERE cityHash64")
+	require.NotContains(t, call.query, "_partition_id")
+	require.NotContains(t, call.query, "cityHash64")
 	require.Contains(t, call.query, "SETTINGS max_threads = 2")
 	require.Contains(t, call.query, "valid_generations AS")
 	require.Contains(t, call.query, "GROUP BY object_key, generation")
@@ -779,8 +815,8 @@ func TestClickHouseStoreCleanupCandidatesUsesSafeBoundedQuery(t *testing.T) {
 	require.NotContains(t, call.query, "row_number()")
 	require.Equal(t, []any{
 		int64(7_200_002),
-		"17", uint8(pending), uint8(committed), uint8(deleted),
-		"17", 7,
+		uint8(pending), uint8(committed), uint8(deleted),
+		7,
 	}, call.args)
 }
 
@@ -813,7 +849,7 @@ func TestClickHouseStoreCleanupCandidatesProtectsValidLatestGenerations(t *testi
 	conn := &fakeClickHouseConnection{selectFn: selectCleanupCandidatesFromHistory(t, serverNow, grace, history...)}
 	store := testClickHouseStore(t, conn)
 
-	candidates, err := store.CleanupCandidates(context.Background(), 7, grace, 10)
+	candidates, err := store.CleanupCandidates(context.Background(), grace, 10)
 	require.NoError(t, err)
 	require.Equal(t, []cleanupCandidate{
 		{Key: "deleted", Generation: oldBeforeDelete},
@@ -1209,7 +1245,7 @@ func selectCleanupCandidatesFromHistory(t *testing.T, serverNow time.Time, grace
 		require.NotContains(t, query, "row_number()")
 		require.Equal(t, grace.Milliseconds(), args[0])
 		require.Equal(t, []any{
-			grace.Milliseconds(), "7", uint8(pending), uint8(committed), uint8(deleted), "7", 10,
+			grace.Milliseconds(), uint8(pending), uint8(committed), uint8(deleted), 10,
 		}, args)
 
 		type operationID struct {

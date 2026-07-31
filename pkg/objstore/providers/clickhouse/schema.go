@@ -42,11 +42,19 @@ var latestSchema = map[string]expectedColumn{
 }
 
 const (
-	objectStorePartitionKey = "cityHash64(object_key) % 64"
-	objectsSortingKey       = "object_key, version, generation, state"
-	chunksSortingKey        = "object_key, generation, chunk_index"
-	latestSortingKey        = "object_key"
+	// legacyObjectStorePartitionKey is the partition key of tables created by
+	// earlier versions. New tables are unpartitioned: the 64-way hash split
+	// multiplied part counts (and mutation/merge churn) 64x without helping
+	// reads, which prune via the primary key. Both layouts stay valid.
+	legacyObjectStorePartitionKey = "cityHash64(object_key) % 64"
+	objectsSortingKey             = "object_key, version, generation, state"
+	chunksSortingKey              = "object_key, generation, chunk_index"
+	latestSortingKey              = "object_key"
 )
+
+// allowedPartitionKeys lists the partition layouts accepted at init time:
+// unpartitioned (new tables) and the legacy 64-way hash split.
+var allowedPartitionKeys = []string{"", legacyObjectStorePartitionKey}
 
 type expectedColumn struct {
 	Type              string
@@ -70,9 +78,11 @@ type tableInfo struct {
 }
 
 type expectedTable struct {
-	Engine       string
-	SortingKey   string
-	PartitionKey string
+	Engine     string
+	SortingKey string
+	// PartitionKeys lists the accepted partition layouts: the unpartitioned
+	// layout used by new tables and the legacy 64-way hash layout.
+	PartitionKeys []string
 }
 
 type schemaIdentifiers struct {
@@ -116,8 +126,8 @@ CREATE TABLE IF NOT EXISTS %s
     event_at DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(object_key) %% 64
-ORDER BY (object_key, version, generation, state)`), name), nil
+ORDER BY (object_key, version, generation, state)
+SETTINGS old_parts_lifetime = 60`), name), nil
 }
 
 func chunksDDL(database, table string) (string, error) {
@@ -140,8 +150,8 @@ CREATE TABLE IF NOT EXISTS %s
     created_at DateTime64(3, 'UTC') DEFAULT now64(3) CODEC(Delta, ZSTD(1))
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(object_key) %% 64
-ORDER BY (object_key, generation, chunk_index)`), name), nil
+ORDER BY (object_key, generation, chunk_index)
+SETTINGS old_parts_lifetime = 60`), name), nil
 }
 
 func latestAggregateDDL(database, table string) (string, error) {
@@ -156,8 +166,8 @@ CREATE TABLE IF NOT EXISTS %s
     manifest %s
 )
 ENGINE = AggregatingMergeTree
-PARTITION BY cityHash64(object_key) %% 64
-ORDER BY object_key`), name, latestManifestAggregateType), nil
+ORDER BY object_key
+SETTINGS old_parts_lifetime = 60`), name, latestManifestAggregateType), nil
 }
 
 func latestMaterializedViewDDL(database, objectsTable, latestTable, view string) (string, error) {
@@ -269,10 +279,13 @@ func validateTable(table string, actual tableInfo, expected expectedTable) error
 	if normalizeSchemaExpression(actual.SortingKey) != normalizeSchemaExpression(expected.SortingKey) {
 		return fmt.Errorf("ClickHouse table %s has incompatible sorting key: expected %s, got %s", table, expected.SortingKey, actual.SortingKey)
 	}
-	if normalizeSchemaExpression(actual.PartitionKey) != normalizeSchemaExpression(expected.PartitionKey) {
-		return fmt.Errorf("ClickHouse table %s has incompatible partition key: expected %s, got %s", table, expected.PartitionKey, actual.PartitionKey)
+	actualPartitionKey := normalizeSchemaExpression(actual.PartitionKey)
+	for _, allowed := range expected.PartitionKeys {
+		if actualPartitionKey == normalizeSchemaExpression(allowed) {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("ClickHouse table %s has incompatible partition key: expected unpartitioned or %s, got %s", table, legacyObjectStorePartitionKey, actual.PartitionKey)
 }
 
 func validateLatestMaterializedView(table string, actual tableInfo, database, objectsTable, latestTable, view string) error {

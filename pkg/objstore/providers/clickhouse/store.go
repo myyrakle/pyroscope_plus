@@ -15,7 +15,7 @@ type store interface {
 	LatestManifest(ctx context.Context, key string) (manifest, error)
 	Chunks(ctx context.Context, object manifest, first, last uint32, start, end uint64) ([]chunk, error)
 	ListLatest(ctx context.Context, prefix, afterKey string, limit int) ([]manifest, error)
-	CleanupCandidates(ctx context.Context, partition uint32, grace time.Duration, limit int) ([]cleanupCandidate, error)
+	CleanupCandidates(ctx context.Context, grace time.Duration, limit int) ([]cleanupCandidate, error)
 	DeleteGenerations(ctx context.Context, candidates []cleanupCandidate) error
 	Close() error
 }

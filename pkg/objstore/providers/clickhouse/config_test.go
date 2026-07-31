@@ -23,7 +23,6 @@ func TestConfigDefaults(t *testing.T) {
 	require.Equal(t, 8, cfg.InsertBatchSize)
 	require.Equal(t, 8, cfg.ReadPrefetchChunks)
 	require.Equal(t, 32*1024*1024, cfg.MaxReadPrefetchBytes)
-	require.Equal(t, 64, cfg.PartitionCount)
 	require.Equal(t, 32*1024*1024, cfg.ChunkSize*cfg.InsertBatchSize)
 	require.True(t, cfg.AutoCreateTables)
 	require.False(t, cfg.Cleanup.Enabled)
@@ -42,7 +41,6 @@ func TestConfigRegisterFlagsWithPrefix(t *testing.T) {
 		"-storage.clickhouse.password=secret",
 		"-storage.clickhouse.read-prefetch-chunks=4",
 		"-storage.clickhouse.max-read-prefetch-bytes=67108864",
-		"-storage.clickhouse.partition-count=64",
 		"-storage.clickhouse.cleanup.enabled=false",
 	})
 	require.NoError(t, err)
@@ -50,7 +48,6 @@ func TestConfigRegisterFlagsWithPrefix(t *testing.T) {
 	require.Equal(t, "secret", cfg.Password.String())
 	require.Equal(t, 4, cfg.ReadPrefetchChunks)
 	require.Equal(t, 64*1024*1024, cfg.MaxReadPrefetchBytes)
-	require.Equal(t, 64, cfg.PartitionCount)
 	require.False(t, cfg.Cleanup.Enabled)
 	require.Contains(t, fs.Lookup("storage.clickhouse.addresses").Usage, "node-local MergeTree")
 	require.Contains(t, fs.Lookup("storage.clickhouse.addresses").Usage, "pinned to one ClickHouse storage node")
@@ -269,16 +266,6 @@ func TestConfigValidateReadPrefetch(t *testing.T) {
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
-}
-
-func TestConfigValidateFixedPartitionCount(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.PartitionCount = 63
-
-	err := cfg.Validate()
-	require.ErrorContains(t, err, "partition count is immutable for the ClickHouse object store schema")
-	require.ErrorContains(t, err, "must be 64")
-	require.ErrorContains(t, err, "recreate")
 }
 
 func TestConfigValidateDerivedTableIdentifiers(t *testing.T) {

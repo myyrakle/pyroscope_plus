@@ -360,10 +360,6 @@ storage:
     # CLI flag: -storage.clickhouse.max-read-prefetch-bytes
     [max_read_prefetch_bytes: <int> | default = 33554432]
 
-    # (advanced) Fixed ClickHouse object-store schema partition count.
-    # CLI flag: -storage.clickhouse.partition-count
-    [partition_count: <int> | default = 64]
-
     # (advanced) Maximum duration allowed for an object upload.
     # CLI flag: -storage.clickhouse.max-upload-duration
     [max_upload_duration: <duration> | default = 30m]

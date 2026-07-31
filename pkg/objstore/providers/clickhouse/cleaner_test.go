@@ -57,7 +57,6 @@ func (t *manualCleanupTicker) Stop()               { close(t.stopped) }
 
 func cleanupTestConfig() Config {
 	cfg := bucketTestConfig()
-	cfg.PartitionCount = 1
 	cfg.Cleanup = CleanupConfig{
 		Enabled:           true,
 		Interval:          time.Minute,
@@ -115,13 +114,12 @@ func TestBucketConstructionDoesNotStartCleanupWhenMetricsFail(t *testing.T) {
 func TestBucketCleanupStartsOnFirstTickAndIgnoresClientClock(t *testing.T) {
 	ticker := newManualCleanupTicker()
 	type cleanupCall struct {
-		partition uint32
-		grace     time.Duration
-		limit     int
+		grace time.Duration
+		limit int
 	}
 	called := make(chan cleanupCall, 1)
-	store := &fakeStore{cleanupFn: func(_ context.Context, partition uint32, grace time.Duration, limit int) ([]cleanupCandidate, error) {
-		called <- cleanupCall{partition: partition, grace: grace, limit: limit}
+	store := &fakeStore{cleanupFn: func(_ context.Context, grace time.Duration, limit int) ([]cleanupCandidate, error) {
+		called <- cleanupCall{grace: grace, limit: limit}
 		return nil, nil
 	}}
 	bucket, err := newBucketWithStoreOptions(cleanupTestConfig(), "test", log.NewNopLogger(), store, bucketOptions{
@@ -138,7 +136,6 @@ func TestBucketCleanupStartsOnFirstTickAndIgnoresClientClock(t *testing.T) {
 	}
 	ticker.ticks <- time.Time{}
 	call := <-called
-	require.Zero(t, call.partition)
 	require.Equal(t, 2*time.Minute, call.grace)
 	require.Equal(t, 2, call.limit)
 }
@@ -162,7 +159,7 @@ func TestBucketCleanupPassesDoNotOverlap(t *testing.T) {
 	ticker := newManualCleanupTicker()
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
-	store := &fakeStore{cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
+	store := &fakeStore{cleanupFn: func(context.Context, time.Duration, int) ([]cleanupCandidate, error) {
 		entered <- struct{}{}
 		<-release
 		return nil, nil
@@ -191,7 +188,7 @@ func TestBucketCleanupReportsOneFailedBatch(t *testing.T) {
 	second := cleanupCandidate{Key: "b", Generation: uuid.New()}
 	deleted := make(chan []cleanupCandidate, 1)
 	store := &fakeStore{
-		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
+		cleanupFn: func(context.Context, time.Duration, int) ([]cleanupCandidate, error) {
 			return []cleanupCandidate{first, second}, nil
 		},
 		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
@@ -227,7 +224,7 @@ func TestBucketCleanupBoundsDefensiveDeletionBatch(t *testing.T) {
 		{Key: "c", Generation: uuid.New()},
 	}
 	store := &fakeStore{
-		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
+		cleanupFn: func(context.Context, time.Duration, int) ([]cleanupCandidate, error) {
 			return candidates, nil
 		},
 		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
@@ -245,19 +242,19 @@ func TestBucketCleanupBoundsDefensiveDeletionBatch(t *testing.T) {
 	require.Equal(t, float64(2), testutil.ToFloat64(bucket.metrics.cleanupDeletions))
 }
 
-func TestBucketCleanupSerializesPartitionsAndRotatesAtBatchLimit(t *testing.T) {
+func TestBucketCleanupRunsOneScanAndOneDeletionPerPass(t *testing.T) {
 	cfg := cleanupTestConfig()
 	cfg.Cleanup.Enabled = false
-	cfg.PartitionCount = 4
 	cfg.Cleanup.MutationBatchSize = 2
-	var selected []uint32
 	var limits []int
 	var batches [][]cleanupCandidate
 	store := &fakeStore{
-		cleanupFn: func(_ context.Context, partition uint32, _ time.Duration, limit int) ([]cleanupCandidate, error) {
-			selected = append(selected, partition)
+		cleanupFn: func(_ context.Context, _ time.Duration, limit int) ([]cleanupCandidate, error) {
 			limits = append(limits, limit)
-			return []cleanupCandidate{{Key: "key", Generation: uuid.New()}}, nil
+			return []cleanupCandidate{
+				{Key: "a", Generation: uuid.New()},
+				{Key: "b", Generation: uuid.New()},
+			}, nil
 		},
 		cleanupDel: func(_ context.Context, candidates []cleanupCandidate) error {
 			batches = append(batches, candidates)
@@ -270,10 +267,9 @@ func TestBucketCleanupSerializesPartitionsAndRotatesAtBatchLimit(t *testing.T) {
 	bucket.cleanupPass(context.Background())
 	bucket.cleanupPass(context.Background())
 
-	require.Equal(t, []uint32{0, 1, 2, 3}, selected)
-	require.Equal(t, []int{2, 1, 2, 1}, limits)
-	// Each pass issues exactly one deletion batch regardless of how many
-	// partitions contributed candidates.
+	// One candidates scan with the full batch budget and exactly one
+	// deletion batch per pass.
+	require.Equal(t, []int{2, 2}, limits)
 	require.Len(t, batches, 2)
 	require.Len(t, batches[0], 2)
 	require.Len(t, batches[1], 2)
@@ -311,7 +307,7 @@ func TestBucketCloseCancelsCleanupBeforeClosingStore(t *testing.T) {
 	ticker := newManualCleanupTicker()
 	entered := make(chan struct{})
 	store := &fakeStore{
-		cleanupFn: func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error) {
+		cleanupFn: func(context.Context, time.Duration, int) ([]cleanupCandidate, error) {
 			return []cleanupCandidate{{Key: "key", Generation: uuid.New()}}, nil
 		},
 		cleanupDel: func(ctx context.Context, _ []cleanupCandidate) error {

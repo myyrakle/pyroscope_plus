@@ -109,11 +109,10 @@ func BenchmarkClickHouseCleanupCandidates(b *testing.B) {
 	count := benchmarkMetadataCount()
 	store := bucket.store.(*clickhouseStore)
 	insertBenchmarkManifests(b, store, count, pending)
-	partition := busiestBenchmarkPartition(b, store)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		candidates, err := store.CleanupCandidates(context.Background(), partition, time.Millisecond, 100)
+		candidates, err := store.CleanupCandidates(context.Background(), time.Millisecond, 100)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -165,27 +164,6 @@ func insertBenchmarkManifests(b *testing.B, store *clickhouseStore, count int, s
 	if err := batch.Send(); err != nil {
 		b.Fatal(err)
 	}
-}
-
-func busiestBenchmarkPartition(b *testing.B, store *clickhouseStore) uint32 {
-	b.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	var rows []struct {
-		Partition uint32 `ch:"partition"`
-	}
-	query := fmt.Sprintf(`SELECT toUInt32(cityHash64(object_key) %% 64) AS partition
-FROM %s
-GROUP BY partition
-ORDER BY count() DESC
-LIMIT 1`, store.objectsTable)
-	if err := store.conn.Select(ctx, &rows, query); err != nil {
-		b.Fatal(err)
-	}
-	if len(rows) != 1 {
-		b.Fatalf("expected one benchmark partition, got %d", len(rows))
-	}
-	return rows[0].Partition
 }
 
 func benchmarkPayloadSize() int64 {

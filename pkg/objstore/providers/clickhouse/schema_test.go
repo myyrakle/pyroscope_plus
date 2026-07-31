@@ -105,8 +105,8 @@ CREATE TABLE IF NOT EXISTS `+"`profile_db`.`objects`"+`
     event_at DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(object_key) % 64
-ORDER BY (object_key, version, generation, state)`), ddl)
+ORDER BY (object_key, version, generation, state)
+SETTINGS old_parts_lifetime = 60`), ddl)
 }
 
 func TestChunksDDL(t *testing.T) {
@@ -122,8 +122,8 @@ CREATE TABLE IF NOT EXISTS `+"`profile_db`.`chunks`"+`
     created_at DateTime64(3, 'UTC') DEFAULT now64(3) CODEC(Delta, ZSTD(1))
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(object_key) % 64
-ORDER BY (object_key, generation, chunk_index)`), ddl)
+ORDER BY (object_key, generation, chunk_index)
+SETTINGS old_parts_lifetime = 60`), ddl)
 }
 
 func TestLatestAggregateDDL(t *testing.T) {
@@ -134,7 +134,7 @@ func TestLatestAggregateDDL(t *testing.T) {
 	require.Contains(t, ddl, "Enum8('pending' = 1, 'committed' = 2, 'deleted' = 3)")
 	require.Contains(t, ddl, "Tuple(UInt64, UUID))")
 	require.Contains(t, ddl, "ENGINE = AggregatingMergeTree")
-	require.Contains(t, ddl, "PARTITION BY cityHash64(object_key) % 64")
+	require.NotContains(t, ddl, "PARTITION BY")
 	require.Contains(t, ddl, "ORDER BY object_key")
 }
 

@@ -40,7 +40,6 @@ type Bucket struct {
 	manifests        *manifestCache
 	readBudget       *semaphore.Weighted
 	now              func() time.Time
-	cleanupPartition uint32
 	cleanupCancel    context.CancelFunc
 	cleanupDone      chan struct{}
 	closeOnce        sync.Once

@@ -301,38 +301,27 @@ func (b *Bucket) cleanupPass(ctx context.Context) {
 		b.metrics.cleanupDuration.Observe(time.Since(started).Seconds())
 	}()
 
-	// Collect candidates across partitions first and delete them in one
-	// batch per pass: every DELETE creates a table-wide mutation (parts are
-	// re-versioned even when untouched), so issuing one mutation per
-	// partition per pass floods the part set faster than expired parts are
-	// reclaimed. One pass now costs at most one mutation per table.
-	partitionCount := uint32(max(b.cfg.PartitionCount, 1))
-	startPartition := b.cleanupPartition % partitionCount
-	remaining := b.cfg.Cleanup.MutationBatchSize
-	batch := make([]cleanupCandidate, 0, remaining)
-	for scanned := uint32(0); scanned < partitionCount && remaining > 0; scanned++ {
-		partition := (startPartition + scanned) % partitionCount
-		b.cleanupPartition = (partition + 1) % partitionCount
-		candidates, err := b.store.CleanupCandidates(ctx, partition, b.cfg.Cleanup.Grace, remaining)
-		if err != nil {
-			if ctx.Err() == nil {
-				b.metrics.cleanupFailures.Inc()
-				level.Warn(b.logger).Log("msg", "failed to select ClickHouse cleanup candidates", "partition", partition, "err", err)
-			}
-			return
+	// One candidates scan and at most one deletion per table per pass:
+	// every DELETE creates a table-wide mutation (parts are re-versioned
+	// even when untouched), so frequent or per-partition deletions flood
+	// the part set faster than expired parts are reclaimed.
+	batch, err := b.store.CleanupCandidates(ctx, b.cfg.Cleanup.Grace, b.cfg.Cleanup.MutationBatchSize)
+	if err != nil {
+		if ctx.Err() == nil {
+			b.metrics.cleanupFailures.Inc()
+			level.Warn(b.logger).Log("msg", "failed to select ClickHouse cleanup candidates", "err", err)
 		}
-		if len(candidates) > remaining {
-			candidates = candidates[:remaining]
-		}
-		b.metrics.cleanupCandidates.Add(float64(len(candidates)))
-		batch = append(batch, candidates...)
-		remaining -= len(candidates)
+		return
 	}
+	if len(batch) > b.cfg.Cleanup.MutationBatchSize {
+		batch = batch[:b.cfg.Cleanup.MutationBatchSize]
+	}
+	b.metrics.cleanupCandidates.Add(float64(len(batch)))
 	if len(batch) == 0 {
 		return
 	}
 	mutationStarted := time.Now()
-	err := b.store.DeleteGenerations(ctx, batch)
+	err = b.store.DeleteGenerations(ctx, batch)
 	b.metrics.cleanupMutationDuration.Observe(time.Since(mutationStarted).Seconds())
 	if err != nil {
 		if ctx.Err() != nil {

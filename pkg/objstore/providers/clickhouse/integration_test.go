@@ -176,23 +176,12 @@ func TestClickHouseIntegrationCleanupSQL(t *testing.T) {
 	latestPayload := []byte{0x00, 0xff, 0x10, 0x00, 0x20}
 	insertIntegrationGeneration(t, ctx, store, latest, 2, eventAt, leaseExpiresAt, latestPayload, true)
 
-	var candidates []cleanupCandidate
-	candidatesByPartition := make(map[uint32][]cleanupCandidate)
-	for partition := uint32(0); partition < objectStorePartitionCount; partition++ {
-		partitionCandidates, err := store.CleanupCandidates(ctx, partition, time.Millisecond, 10)
-		require.NoError(t, err, "select cleanup candidates in partition %d", partition)
-		if len(partitionCandidates) == 0 {
-			continue
-		}
-		candidates = append(candidates, partitionCandidates...)
-		candidatesByPartition[partition] = partitionCandidates
-	}
+	candidates, err := store.CleanupCandidates(ctx, time.Millisecond, 10)
+	require.NoError(t, err, "select cleanup candidates")
 	require.ElementsMatch(t, []cleanupCandidate{abandoned, superseded}, candidates)
 	require.NotContains(t, candidates, latest)
 
-	for partition, partitionCandidates := range candidatesByPartition {
-		require.NoError(t, store.DeleteGenerations(ctx, partitionCandidates), "delete cleanup candidates in partition %d", partition)
-	}
+	require.NoError(t, store.DeleteGenerations(ctx, candidates), "delete cleanup candidates")
 	for _, candidate := range candidates {
 		require.Zero(t, integrationGenerationRows(t, ctx, store, store.objectsTable, candidate), "candidate manifest rows remain")
 		require.Zero(t, integrationGenerationRows(t, ctx, store, store.chunksTable, candidate), "candidate chunk rows remain")

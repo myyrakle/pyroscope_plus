@@ -21,7 +21,6 @@ const (
 	defaultMaxReadPrefetchBytes   = 32 * 1024 * 1024
 	defaultMaxInflightReadBytes   = 512 * 1024 * 1024
 	maxReadPrefetchBytes          = 256 * 1024 * 1024
-	objectStorePartitionCount     = 64
 	maxClickHouseIdentifierLength = 255
 	maxCleanupMutationBatchSize   = 20000
 )
@@ -57,7 +56,6 @@ type Config struct {
 	InsertBatchSize      int                    `yaml:"insert_batch_size" category:"advanced"`
 	ReadPrefetchChunks   int                    `yaml:"read_prefetch_chunks" category:"advanced"`
 	MaxReadPrefetchBytes int                    `yaml:"max_read_prefetch_bytes" category:"advanced"`
-	PartitionCount       int                    `yaml:"partition_count" category:"advanced"`
 	MaxUploadDuration    time.Duration          `yaml:"max_upload_duration" category:"advanced"`
 	ManifestCacheTTL     time.Duration          `yaml:"manifest_cache_ttl" category:"advanced"`
 	MaxInflightReadBytes int                    `yaml:"max_inflight_read_bytes" category:"advanced"`
@@ -103,7 +101,6 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 	f.IntVar(&cfg.InsertBatchSize, prefix+"clickhouse.insert-batch-size", 8, "Maximum number of chunks per ClickHouse insert batch.")
 	f.IntVar(&cfg.ReadPrefetchChunks, prefix+"clickhouse.read-prefetch-chunks", defaultReadPrefetchChunks, "Maximum number of object chunks prefetched by a reader.")
 	f.IntVar(&cfg.MaxReadPrefetchBytes, prefix+"clickhouse.max-read-prefetch-bytes", defaultMaxReadPrefetchBytes, "Maximum bytes prefetched by an object reader.")
-	f.IntVar(&cfg.PartitionCount, prefix+"clickhouse.partition-count", objectStorePartitionCount, "Fixed ClickHouse object-store schema partition count.")
 	f.DurationVar(&cfg.MaxUploadDuration, prefix+"clickhouse.max-upload-duration", 30*time.Minute, "Maximum duration allowed for an object upload.")
 	f.DurationVar(&cfg.ManifestCacheTTL, prefix+"clickhouse.manifest-cache-ttl", 15*time.Second, "How long readers may reuse a cached object manifest instead of querying ClickHouse. Objects are immutable, so this only delays visibility of same-key overwrites and deletes. 0 disables the cache.")
 	f.IntVar(&cfg.MaxInflightReadBytes, prefix+"clickhouse.max-inflight-read-bytes", defaultMaxInflightReadBytes, "Maximum chunk payload bytes all object readers may hold in memory at once. Reads wait when the budget is exhausted, bounding query-time memory usage. 0 disables the limit.")
@@ -138,9 +135,6 @@ func (cfg *Config) Validate() error {
 	}
 	if err := cfg.validateReadPrefetch(); err != nil {
 		return err
-	}
-	if cfg.PartitionCount != objectStorePartitionCount {
-		return fmt.Errorf("ClickHouse partition count is immutable for the ClickHouse object store schema: must be %d; restore partition_count or recreate all ClickHouse object store tables", objectStorePartitionCount)
 	}
 	if _, err := deriveSchemaIdentifiers(cfg.ObjectsTable); err != nil {
 		return err

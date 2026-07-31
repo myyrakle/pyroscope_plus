@@ -46,7 +46,7 @@ type fakeStore struct {
 	deletes     []manifest
 	deleteErr   error
 	cleanupErr  error
-	cleanupFn   func(context.Context, uint32, time.Duration, int) ([]cleanupCandidate, error)
+	cleanupFn   func(context.Context, time.Duration, int) ([]cleanupCandidate, error)
 	cleanupDel  func(context.Context, []cleanupCandidate) error
 
 	begin    func(context.Context, manifest) (manifest, error)
@@ -206,9 +206,9 @@ func (s *fakeStore) ListLatest(ctx context.Context, prefix, afterKey string, lim
 	return result, listErr
 }
 
-func (s *fakeStore) CleanupCandidates(ctx context.Context, partition uint32, grace time.Duration, limit int) ([]cleanupCandidate, error) {
+func (s *fakeStore) CleanupCandidates(ctx context.Context, grace time.Duration, limit int) ([]cleanupCandidate, error) {
 	if s.cleanupFn != nil {
-		return s.cleanupFn(ctx, partition, grace, limit)
+		return s.cleanupFn(ctx, grace, limit)
 	}
 	return nil, s.cleanupErr
 }

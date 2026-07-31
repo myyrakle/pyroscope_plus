@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -337,17 +336,17 @@ func (s *clickhouseStore) Init(ctx context.Context) error {
 		return incompatibleV2SchemaError(err)
 	}
 	if err := validateTableDefinition(s.cfg.Database+"."+s.cfg.ObjectsTable, tables, s.cfg.ObjectsTable, expectedTable{
-		Engine: "MergeTree", SortingKey: objectsSortingKey, PartitionKey: objectStorePartitionKey,
+		Engine: "MergeTree", SortingKey: objectsSortingKey, PartitionKeys: allowedPartitionKeys,
 	}); err != nil {
 		return incompatibleV2SchemaError(err)
 	}
 	if err := validateTableDefinition(s.cfg.Database+"."+s.cfg.ChunksTable, tables, s.cfg.ChunksTable, expectedTable{
-		Engine: "MergeTree", SortingKey: chunksSortingKey, PartitionKey: objectStorePartitionKey,
+		Engine: "MergeTree", SortingKey: chunksSortingKey, PartitionKeys: allowedPartitionKeys,
 	}); err != nil {
 		return incompatibleV2SchemaError(err)
 	}
 	if err := validateTableDefinition(s.cfg.Database+"."+identifiers.LatestTable, tables, identifiers.LatestTable, expectedTable{
-		Engine: "AggregatingMergeTree", SortingKey: latestSortingKey, PartitionKey: objectStorePartitionKey,
+		Engine: "AggregatingMergeTree", SortingKey: latestSortingKey, PartitionKeys: allowedPartitionKeys,
 	}); err != nil {
 		return incompatibleV2SchemaError(err)
 	}
@@ -605,20 +604,18 @@ LIMIT ?`, s.latestTable, latestManifestProjection)
 	)
 }
 
-func (s *clickhouseStore) CleanupCandidates(ctx context.Context, partition uint32, grace time.Duration, limit int) ([]cleanupCandidate, error) {
-	// Partition scans filter on the _partition_id virtual column instead of
-	// re-computing cityHash64(object_key) % 64 per row: the partition key of
-	// both tables is exactly that expression, so ClickHouse prunes all other
-	// partitions instead of scanning the whole table for every partition of
-	// the cleanup cycle. max_threads is capped so that periodic cleanup scans
-	// do not starve latency-sensitive manifest lookups and chunk reads.
+func (s *clickhouseStore) CleanupCandidates(ctx context.Context, grace time.Duration, limit int) ([]cleanupCandidate, error) {
+	// One whole-table scan per cleanup pass. The manifests table stays small
+	// (one row per object operation), so a single aggregation is cheap and
+	// replaces the former 64 per-partition scans. max_threads is capped so
+	// that periodic cleanup scans do not starve latency-sensitive manifest
+	// lookups and chunk reads.
 	query := fmt.Sprintf(`WITH
 	now64(3) AS cleanup_now,
 	toIntervalMillisecond(?) AS cleanup_grace,
 	partition_operations AS (
 	SELECT object_key, generation, state, version, lease_expires_at, event_at
 	FROM %s
-	WHERE _partition_id = ?
 ), pending_versions AS (
 	SELECT object_key, generation, version, max(lease_expires_at) AS lease_expires_at
 	FROM partition_operations
@@ -649,7 +646,6 @@ func (s *clickhouseStore) CleanupCandidates(ctx context.Context, partition uint3
 ), latest_generations AS (
 	SELECT object_key, tupleElement(argMaxMerge(manifest), 1) AS generation
 	FROM %s
-	WHERE _partition_id = ?
 	GROUP BY object_key
 ), abandoned_pending AS (
 	SELECT source.object_key, source.generation
@@ -675,13 +671,12 @@ FROM candidates
 ORDER BY object_key, generation
 LIMIT ?
 SETTINGS max_threads = 2`, s.objectsTable, s.latestTable)
-	partitionID := strconv.FormatUint(uint64(partition), 10)
 	var rows []cleanupCandidateRow
 	queryCtx, cancel := s.queryContext(ctx)
 	err := s.conn.Select(queryCtx, &rows, query,
 		cleanupGraceMilliseconds(grace),
-		partitionID, uint8(pending), uint8(committed), uint8(deleted),
-		partitionID, limit,
+		uint8(pending), uint8(committed), uint8(deleted),
+		limit,
 	)
 	cancel()
 	if err != nil {
